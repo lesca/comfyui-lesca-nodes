@@ -1,0 +1,207 @@
+[EN](README.md) | [中文](README.zh-CN.md)
+
+# comfyui-lesca-nodes
+
+Lesca 的自定义 ComfyUI 节点。
+
+目前提供 **Load Video (Lesca)**、**Save Video (Lesca)**、**Video Info (Lesca)**
+和 **Video to Images (Lesca)** 四个节点。
+
+## Load Video (Lesca)
+
+ComfyUI 自带的视频加载节点（Config UI）只能从一个固定目录里挑选视频，无法指定
+显式路径。本节点提供 `Load Video (Lesca)`：用一个直接输入的文件路径加载视频，
+输出与 ComfyUI 自带的 `LoadVideo` 节点一致。
+
+### 输入
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `filename` | `String` | 要加载的视频文件**路径**，例如 `input/video/clip.mp4`。相对路径基于 ComfyUI **根目录**解析（比 `input` 高一级、存放 Config UI 源文件的那层目录），因此 `input/clip.mp4` 表示 `<root>/input/clip.mp4`，`output/clip.mp4` 表示 `<root>/output/clip.mp4`。绝对路径原样使用。逃出根目录的相对路径会被拒绝。 |
+
+### 输出
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `video` | `Video` | 加载得到的视频——与 ComfyUI 自带 `LoadVideo` 相同的输出类型。 |
+
+### 实时预览
+
+`filename` 字段下方有一个 **Update** 按钮（本节点自带一个小型自定义前端
+`web/extension.js`）。点击它——或者直接编辑文件名——视频就会显示为节点上的
+预览，**无需运行节点**。上游节点传入 `filename` 参数时，该按钮无效。
+
+由于本节点接受任意路径（包括绝对路径），而 ComfyUI 内置的 `/view` 端点无法
+服务这些路径，预览改由自定义后端端点 `/lesca/load_video/preview` 流式输出：
+它复用与节点 `execute` 完全相同的路径解析逻辑，并支持 HTTP Range（拖动 seek）。
+预览加载失败（文件不存在或不是视频）时，节点上会直接显示错误信息。当
+`filename` 连接到字符串产出节点时预览同样可用——前端读取的是*源*节点的 widget
+值，而不是本节点上那个（可能过期的）值。
+
+### 文件缺失时
+
+当 `filename` 指向一个**不存在**的路径时，节点**不会**让整个运行报错。
+`execute` 会输出一个确定的 16×16、24 帧、纯白色占位视频，工作流继续运行，
+下游每个节点都能拿到一个有效的 `Video`。空路径、逃出 ComfyUI 根目录的相对
+路径、以及无法识别为视频的文件仍会照常报错——只有"文件确实不存在"才触发
+回退。
+
+`filename` 字段还可以**连接**到任何其它字符串产出节点（例如内置 `Text` 节点、
+`PrimitiveString`）。
+
+## Save Video (Lesca)
+
+ComfyUI 内置流程需要两个节点才能把一批图片变成保存好的视频文件：`Create
+Video`（图片 → 视频，可带音频）和 `Save Video`（把视频写入 output 目录，文件名
+带 `_000001_` 形式的计数器后缀）。`Save Video (Lesca)` 把两者合并为一个节点，
+并新增两项两者都不具备的能力：
+
+* **用户指定保存路径** — `filename` 是要保存的视频文件*路径*，例如
+  `output/video/clip.mp4`：相对路径基于 ComfyUI **根目录**解析，
+  `output/video/clip.mp4` 表示 `<root>/output/video/clip.mp4`；绝对路径原样
+  使用。文件就写在给定路径下——**没有 `_000001_` 计数器后缀**。文件名没有
+  扩展名时会自动补上，父目录不存在时会自动创建。
+* **帧 + 音频裁剪** — `trim_frames` 在编码前丢掉前 N 帧**以及**前 `N / fps`
+  秒的音频（与 ComfyUI `TrimAudioDuration` 节点相同的算法）。默认 `0` 表示不
+  裁剪。
+
+其余输入照搬两个源节点：`fps`、`bit_depth`、`color_space` 来自 `Create
+Video`，`format`（嵌套 `codec` → `encoding` → `crf`）来自 `Save Video`。
+`Create Video` 自己的 `codec` 输入被有意省略——输出编码由 `format` 决定。
+
+除保存得到的 `filename` 路径和编码后的 `video` 外，节点还会透传**裁剪后**的
+`images` 和 `audio`（实际写进视频的数据），类型分别与对应输入相同，裁剪后的
+中间结果可以再接给其它节点。
+
+### 输入
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `images` | `Image` | 用于创建视频的图片批次（与 `Create Video` 相同）。 |
+| `audio` | `Audio` | 要附加的可选音频（与 `Create Video` 相同）。 |
+| `filename` | `String` | 要保存的视频文件**路径**，例如 `output/video/clip.mp4`（默认值）。相对路径基于 ComfyUI **根目录**解析；绝对路径原样使用。就保存在该路径下（无计数器后缀）。没有扩展名时自动补上容器扩展名；父目录不存在时自动创建。逃出根目录的相对路径会被拒绝。 |
+| `trim_frames` | `Int` | 丢掉前 N 帧以及前 `N / fps` 秒音频（`round(N / fps * sample_rate)` 个采样——与 `TrimAudioDuration` 相同）。默认 `0`。大于等于总帧数时会报错。 |
+| `fps` | `Float` | 输出帧率。默认 `30`，范围 `1`–`120`。 |
+| `bit_depth` | `Combo` | `auto` / `8` / `10`（默认 `auto`）。auto 对 sRGB 用 8-bit、对 HDR 用 10-bit。 |
+| `color_space` | `Combo` | `sRGB` / `HDR` / `HDR PQ`（默认 `sRGB`）。HDR 选择 BT.2020/HLG，HDR PQ 选择 BT.2020/PQ。 |
+| `format` | `DynamicCombo` | `auto` / `mp4` / `mkv` / `webm`，各自嵌套 `Codec`（`auto`/`h264`/`av1`；webm 仅 `auto`/`av1`）→ `Encoding`（`auto`/`re-encode`）→ `CRF`。auto 对 H.264 用 MP4、对 AV1 用 WebM。 |
+
+与内置 `Save Video` 相同，保存的文件会内嵌 prompt 和 `extra_pnginfo`
+元数据（可用 ComfyUI 的 `--disable-metadata` 关闭）。
+
+### 输出
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `filename` | `String` | 保存的视频文件绝对路径，例如 `/…/output/video/clip.mp4`。 |
+| `video` | `Video` | 保存得到的视频——与 ComfyUI 自带 `Save Video` 相同的输出类型。 |
+| `images` | `Image` | 裁剪后的图片——丢掉了前 `trim_frames` 帧。类型与 `images` 输入相同。 |
+| `audio` | `Audio` | 裁剪后的音频——丢掉了前 `trim_frames / fps` 秒。类型与 `audio` 输入相同（未提供音频时为 `None`）。 |
+
+## Video Info (Lesca)
+
+以独立输出报告视频的各个属性，方便工作流据此分支（例如选择目标分辨率或重编码
+参数）。`video` 输入接受 **Load Video (Lesca)** 的 `video` 输出——或任何其它
+视频节点的输出，包括 Save Video (Lesca)。除逐项输出外，还有一个 `video_info`
+字符串输出，把所有字段各占一行地列出来（`fps`、`bit_depth`、`color_space`、
+`width`、`height`、`frame_count`），用于日志或显示。
+
+### 输入
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `video` | `Video` | 要检查的视频。 |
+
+### 输出
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `video_info` | `String` | 其余所有输出字段拼成的一个字符串，每行一个：fps、bit_depth、color_space、width、height、frame_count。 |
+| `fps` | `Float` | 视频帧率，例如 `24.0`。 |
+| `bit_depth` | `String` | 位深，字符串形式，例如 `"8"` 或 `"10"`。 |
+| `color_space` | `String` | `sRGB`、`HDR`、`HDR PQ`，或视频未声明时的 `auto`。 |
+| `width` | `Int` | 宽度（像素）。 |
+| `height` | `Int` | 高度（像素）。 |
+| `frame_count` | `Int` | 视频总帧数。 |
+
+数值取自 ComfyUI 的标准视频访问器（`get_frame_rate` / `get_bit_depth` /
+`get_color_space` / `get_dimensions` / `get_frame_count`），因此文件型视频直接
+读取容器元数据，不解码帧、不整体载入内存；张量创建的视频（例如来自 Save Video
+(Lesca)）则报告其内存属性。
+
+## Video to Images (Lesca)
+
+把视频解码成一批图片帧，可选项包括帧率重采样、头尾裁剪、帧数上限和缩放。
+`video` 输入接受 **Load Video (Lesca)** 的 `video` 输出（惰性的
+`VideoFromFile`）或任何其它视频节点的输出。
+
+### 输入
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `video` | `Video` | 要解码的视频。 |
+| `frame_cap` | `Int` | 最多导出的帧数。默认 `0` = 全部导出。 |
+| `trim_mode` | `Combo` | `head`：丢掉最前面的帧；`tail`：丢掉最末尾的帧。默认 `head`。 |
+| `trim_frames` | `Int` | 要丢掉的帧数，在帧率换算之后应用。默认 `0` = 不裁剪。 |
+| `force_rate` | `Int` | 强制的输出帧率。默认 `0` = 保持源帧率。`force_rate = 24` 时，30fps 的内容会被重采样成 24fps 的帧序列。 |
+| `custom_width` | `Int` | 目标宽度（像素）。默认 `0` = 保持源宽度。 |
+| `custom_height` | `Int` | 目标高度（像素）。默认 `0` = 保持源高度。 |
+
+### 输出
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `images` | `Image` | 解码后的帧（按需缩放）。 |
+| `audio` | `Audio` | 导出帧覆盖的时间段对应的音频，即 `[q[0]/S, (q[-1]+1)/S)`，`S` 为源帧率。head 裁剪丢掉被裁帧下的音频前缀；帧数上限同时丢掉未导出帧对应的音频尾部。按源采样率切片，不按输出帧率。无音频轨的视频输出 `None`。 |
+| `fps` | `Float` | 导出帧序列的帧率：设置了 `force_rate` 时为 `force_rate`，否则为源帧率。 |
+| `video` | `Video` | 重建的视频，与 `images` / `audio` 输出共享同一组张量。导出帧数不在此输出——把该 `video` 接入 **Video Info (Lesca)** 的 `frame_count` 即可获取。 |
+
+### 处理顺序与缩放规则
+
+管线按 **force-rate → trim → frame-cap → resize** 的顺序执行：
+
+* **force-rate** — 内容先被重采样到目标帧率（输出第 `i` 帧取源第
+  `round(i · S / T)` 帧，钳制到最后一帧），因此对 30fps 内容设置
+  `force_rate = 24` 会导出 24fps 的帧序列。
+* **trim** — `trim_mode = head` 丢掉前 `trim_frames` 帧，`tail` 丢掉后
+  `trim_frames` 帧。`trim_frames` 必须小于帧率换算后的帧数，否则节点报错。
+* **frame-cap** — 在帧率换算与裁剪之后最多保留 `frame_cap` 帧（`0` = 不限）。
+* **resize** — `custom_width` / `custom_height`：两者都为 `0` 时保持源分辨率；
+  恰好一个为 `0` 时另一个等比例缩放；两者都非 `0` 时精确缩放到 `(W, H)`。
+
+### 窗口化解码
+
+对普通文件输入的 `video`，节点只读取容器元数据（不解码），然后**只解码导出帧
+覆盖的时间窗口** `[q[0]/S, (q[-1]+1)/S)`——导出一小时长视频的前 1 秒不再触发
+全量解码和随之而来的内存暴涨。无法使用该路径的输入（张量型
+`VideoFromComponents` 视频、已带裁剪窗口的输入、元数据中缺少帧率或帧数的输入、
+或 pts 怪癖导致窗口解码结果不足）回退到全量解码，并对已加载的张量应用相同的
+索引映射；两条路径输出逐像素一致。
+
+## 安装
+
+把这个文件夹放进 ComfyUI 的 custom_nodes 目录：
+
+```
+ComfyUI/custom_nodes/comfyui-lesca-nodes/
+```
+
+然后重启 ComfyUI。节点通过 ComfyUI 的 V3 `comfy_entrypoint` 机制注册（与
+`comfy_extras/nodes_video.py` 使用的机制相同）。
+
+## 文件
+
+* `__init__.py` — 包入口；暴露 `comfy_entrypoint`（同时注册四个节点与 Load
+  Video 预览路由的组合扩展），以及 `WEB_DIRECTORY = "web"`。
+* `lesca_load_video.py` — Load Video 节点、路径解析逻辑、
+  `/lesca/load_video/preview` 流式端点，以及文件缺失时的白色占位回退。
+* `lesca_save_video.py` — Save Video 节点（Create Video + Save Video 合并，带
+  帧/音频裁剪与用户指定保存路径）。
+* `lesca_video_info.py` — Video Info 节点（video_info 字符串 / fps / bit
+  depth / color space / width / height / frame count）。
+* `lesca_video_to_images.py` — Video to Images 节点（窗口化解码，
+  force-rate → trim → frame-cap → resize 管线，音频区间切片）。
+* `web/extension.js` — 自定义前端：Load Video 的 **Update** 按钮 + 实时预览。
+* `pyproject.toml` — ComfyUI 自定义节点管理器用的元数据（`[tool.comfyui] web =
+  "web"` 负责挂载前端）。
+* `specs.md` — 原始需求规格（目标 1–4，中文）。

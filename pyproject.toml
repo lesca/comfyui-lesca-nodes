@@ -1,0 +1,18 @@
+[project]
+name = "comfyui-lesca-nodes"
+description = "Custom ComfyUI nodes for Lesca. Load Video (Lesca) loads a video from a user-specified folder and filename; Save Video (Lesca) merges Create Video + Save Video with a user-specified save path and frame/audio trimming."
+version = "0.1.0"
+requires-python = ">= 3.9"
+license = "MIT"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/lesca/comfyui-lesca-nodes"
+Repository = "https://github.com/lesca/comfyui-lesca-nodes"
+
+[tool.comfyui]
+DisplayName = "Lesca Nodes"
+PublisherId = "lesca"
+# Custom frontend: adds an "Update" button + live video preview to the Load
+# Video (Lesca) node. Served by ComfyUI as an extension web dir.
+web = "web"
