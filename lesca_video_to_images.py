@@ -17,8 +17,9 @@ alone — force-rate first (output frame ``i`` takes source frame
 drops the first ``R`` output frames, ``tail`` the last ``R``), then frame-cap
 (at most ``C`` output frames, ``0`` = no cap) — and, for plain file-backed
 input, decodes only the window ``[q[0]/S, (q[-1]+1)/S)`` that those frames
-span. Exporting the first second of a one-hour video then touches exactly
-those frames instead of the whole file. Inputs where that is not possible
+span (padded by at most ``1/(2S)`` on each side so the audio stretch also
+fits — see the Audio section). Exporting the first second of a one-hour
+video then touches exactly those frames instead of the whole file. Inputs where that is not possible
 (tensor ``VideoFromComponents`` videos, videos already carrying a non-trivial
 trim window, unknown frame rate or frame count in the container metadata,
 or a decode that comes back short for pts quirks) fall back to the full
@@ -27,14 +28,22 @@ Both paths produce identical frames.
 
 Audio
 -----
-The audio output is the stretch covered by the exported frames,
-``[q[0]/S, (q[-1]+1)/S)``: a head trim drops both the trimmed frames and the
-audio prefix that ran under them, and a frame cap also drops the audio tail
-that the unexported frames would have carried. On the window path the decode
-already returns exactly that stretch (zero extra work); on the fallback path
-the full audio is sliced to the same span. A video without an audio track
-yields ``None``. The exported video output carries the same images and audio
-stretch.
+The audio output is the stretch of the source timeline that the exported
+video plays, ``[shift/E, (shift+K)/E)``: output frame ``i`` plays at ``i/E``
+seconds and maps to source frame ``q[i] ~ (shift+i)/E``, so the audio runs
+exactly ``K/E`` seconds — the same length as the video, keeping them in sync
+when ``force_rate`` differs from the source rate (slicing the source-frame
+span ``[q[0]/S, (q[-1]+1)/S)`` instead is shorter by up to ``K*(1/T-1/S)``
+when ``T != S``, which desyncs the trailing audio and breaks segment-to-
+segment concatenation). ``shift`` is ``trim_frames`` for ``head`` mode and
+``0`` for ``tail``; ``E`` is ``force_rate`` when positive, else the source
+rate. A head trim drops the audio prefix that ran under the trimmed frames,
+and a frame cap drops the audio tail the unexported frames would have
+carried. On the window path the decode window covers the span (plus at most
+``1/(2S)`` of head/tail padding for the frame boundaries) and the decoded
+audio is sliced to it; on the fallback path the full audio is sliced to the
+same span. A video without an audio track yields ``None``. The exported video
+output carries the same images and audio stretch.
 
 Resize
 ------
@@ -276,17 +285,31 @@ class VideoToImagesLesca(io.ComfyNode):
         T = int(force_rate or 0)
         C = int(frame_cap or 0)
 
-        # Preferred path: decode only the frames the export needs. The probe
-        # reads container metadata only (no decoding); the window
-        # [q[0]/S, (q[-1]+1)/S) covers exactly the exported frames, so a long
-        # input video costs O(window) memory instead of O(video).
+        # Preferred path: decode only the frames and audio the export needs.
+        # The probe reads container metadata only (no decoding); the window
+        # around [q[0]/S, (q[-1]+1)/S) covers exactly the exported frames and
+        # their audio stretch, so a long input video costs O(window) memory
+        # instead of O(video).
         plan = _window_probe(video, R, T, C, trim_mode)
         images = audio = None
         S = None
         if plan is not None and plan[1] > 0:
             q, K, S = plan
-            start = float(q[0] / S)
-            dur = float((q[-1] - q[0] + 1) / S)
+            # The audio is stretched to the output video's duration, not the
+            # source frames' span: output frame i plays at i/E seconds and maps
+            # to source frame q[i] ~ (shift+i)/E, so the audio must cover
+            # [shift/E, (shift+K)/E) — exactly K/E seconds, the video's length.
+            # Slicing the source span [q[0]/S, (q[-1]+1)/S) instead is off by
+            # up to K*(1/T-1/S) when T != S, desyncing the trailing audio and
+            # breaking segment-to-segment concatenation.
+            E = Fraction(T) if T > 0 else S
+            shift = R if trim_mode == "head" else 0
+            a0 = float(shift / E)
+            a1 = float((shift + K) / E)
+            # Decode a window covering both the needed source frames and the
+            # audio span (they differ by at most 1/(2S) on each side).
+            start = min(float(q[0] / S), a0)
+            dur = max(float((q[-1] + 1) / S), a1) - start
             windowed = video.as_trimmed(start, dur, strict_duration=False)
             comps = windowed.get_components()
             # A pts quirk (VFR, container metadata lying) can shrink the
@@ -297,7 +320,8 @@ class VideoToImagesLesca(io.ComfyNode):
                 # The window decode covers [start, start + dur); its audio head
                 # can drift by one sample when ComfyUI's per-frame skip uses
                 # float-truncated seconds (upstream behaviour, <= 21 us at 48k).
-                audio = comps.audio
+                # Slice the decoded audio down to the exported span [a0, a1).
+                audio = _audio_span(comps.audio, a0 - start, a1 - start)
 
         if images is None:
             components = video.get_components()
@@ -305,8 +329,12 @@ class VideoToImagesLesca(io.ComfyNode):
             S = Fraction(components.frame_rate)
             q, K = _plan_indices(full.shape[0], S, trim_mode, R, T, C)
             images = full[q]
-            audio = _audio_span(components.audio, float(q[0] / S),
-                                float((q[-1] + 1) / S)) if K else None
+            # Audio stretched to the output video's duration [shift/E,
+            # (shift+K)/E) so it stays in sync when force_rate != source rate.
+            E = Fraction(T) if T > 0 else S
+            shift = R if trim_mode == "head" else 0
+            audio = _audio_span(components.audio, float(shift / E),
+                                float((shift + K) / E)) if K else None
 
         E = Fraction(T) if T > 0 else S
         images = _apply_resize(images, int(custom_width or 0), int(custom_height or 0))

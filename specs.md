@@ -62,7 +62,7 @@ Config UI中自带的节点将图片保存成视频需要使用Create Video和Sa
   * custom_height: 整数类型。设置视频的高度。默认为0。
 * 输出：
   * images: 类型 io.Image。帧率强制转化后的图片。
-  * audio: 类型 io.Audio。音频输出为导出帧覆盖的时间段 [q[0]/S, (q[-1]+1)/S)：head trim 丢掉被裁帧下的音频前缀，frame_cap 同时丢掉未导出帧对应的音频尾部，force_rate 换算后的帧映射决定覆盖范围（音频按源采样率切片，不按输出帧率）。无音频轨的视频输出 None。
+  * audio: 类型 io.Audio。音频输出为导出视频所播放的源时间区间 [shift/E, (shift+K)/E)：shift 为 head 模式下的 trim_frames（tail 模式为 0），E 为 force_rate>0 时的输出帧率、否则源帧率 S，K 为导出帧数。音频时长恰为 K/E 秒 = 输出视频时长，force_rate 改变帧率时音画仍严格同步、相邻两段无缝相接（若按源帧区间 [q[0]/S,(q[-1]+1)/S) 切片，时长偏差可达 K*(1/T-1/S)，导致音频提前结束、拼接漂移）。head trim 丢掉被裁帧下的音频前缀，frame_cap 同时丢掉未导出帧对应的音频尾部（音频按源采样率切片）。无音频轨的视频输出 None。
   * fps: float 类型。视频的fps，如果有force_rate，则输出force_rate所指定的FPS。
   * video: io.Video 类型。video 输出。总帧数不在此输出：将该 video 输出接入 Video Info (Lesca) 节点的 frame_count 即可获取。
 
