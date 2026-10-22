@@ -95,6 +95,26 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
 * 再次对该目录运行该节点时会忽略 `prefix_merged-yyyy_mm_dd_hh_mm_ss.mp4` 这类文件以免重复合并。
 * 输入可以接受上游节点的输出作为参数。
 
+## 目标 6: Video Add Noise (Lesca) 节点
+将上游节点传入的视频截取指定的帧数，并为这些帧添加噪点。
+* 输入：
+  * `video`: io.Video 类型。接收上游节点的视频输出。
+  * `mode`: 可选类型为head（从头部截取指定帧数）、 tail（从尾部截取指定帧数）两种模式。默认head模式。
+  * `frame_num_list`: 默认 `18 2 1 1` 4层。总共22帧，意味着从video中，截取22帧。
+  * `strenth_list`: 噪点的强度列表。默认` 0.4 0.3 0.1 0.04` 4层。将 `frame_num_list` 中的每一层按照 `strenth_list` 中的强度添加噪声。
+  * `seed`: 可选整数，默认0。`0` 表示完全随机（每次运行都不同）；`seed>0` 时第 `i` 帧用 `seed + i` 播种，结果可复现，且每一帧的噪声仍然互不相同。
+* 输出：
+  * `images`: 添加噪点后的图片。
+
+要求：
+* 从 video 截取 frame 可以参考内置的 `VideoFrameSample` 和 `GetVideoComponents` 节点
+* 添加噪声可以参考内置的 `ImageAddNoise` 节点
+  * 为一帧添加噪点后，下一帧的噪点需要重新随机，即每一帧的噪声都应该不一样（即使 strenth 一样）。
+* `frame_num_list` 与 `strenth_list` 的层数必须对应。
+  * 如果层数不对应则抛出异常，工作流无法运行。
+* 当视频可用帧数少于要截取的总帧数时，截取数量钳制为可用帧数（`take = min(total, N)`），多余的帧由靠前的层吸收，不报错。
+* 本节点为非输出节点（转换型），只输出 `images`，供下游节点使用。
+
 ## 对你可能有帮助的参考资料
 
 ### ComfyUI 源码

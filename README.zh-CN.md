@@ -5,7 +5,19 @@
 Lesca 的自定义 ComfyUI 节点。
 
 目前提供 **Load Video (Lesca)**、**Save Video (Lesca)**、**Video Info
-(Lesca)**、**Video to Images (Lesca)** 和 **Video Combine (Lesca)** 五个节点。
+(Lesca)**、**Video to Images (Lesca)**、**Video Combine (Lesca)** 和
+**Video Add Noise (Lesca)** 六个节点。
+
+## 节点功能一览
+
+| 节点 | 功能 | 关键能力 |
+|------|------|---------|
+| [Load Video (Lesca)](#load-video-lesca) | 按显式文件路径加载视频，输出与内置 `LoadVideo` 一致 | 任意路径（相对 ComfyUI 根目录或绝对路径）；无需运行节点即可实时预览；文件缺失时输出确定的白色占位视频 |
+| [Save Video (Lesca)](#save-video-lesca) | 把内置 `Create Video` + `Save Video` 合并为一个节点 | 用户指定保存路径（无 `_000001_` 计数器后缀）；帧 + 音频裁剪；裁剪后的 `images` / `audio` 透传为输出 |
+| [Video Info (Lesca)](#video-info-lesca) | 以独立输出报告视频各项属性，供工作流分支使用 | `fps` / `bit_depth` / `color_space` / `width` / `height` / `frame_count`，外加逐行输出的 `video_info` 字符串；输出节点，可单独运行 |
+| [Video to Images (Lesca)](#video-to-images-lesca) | 把视频解码成一批图片帧 | force-rate → trim → frame-cap → resize 管线；窗口化解码（不全量解码）；音频区间随导出帧同步裁剪 |
+| [Video Combine (Lesca)](#video-combine-lesca) | 把目录中所有同前缀的视频文件合并成一个 | 任意上游输出触发；流拷贝合并、不兼容时重编码兜底；自动排除已合并产物；按源文件指纹做执行缓存 |
+| [Video Add Noise (Lesca)](#video-add-noise-lesca) | 截取头部/尾部一段帧，添加互相独立的逐帧噪声 | 分层强度调度（`frame_num_list` / `strenth_list`）；可选 seed 复现逐帧噪声；短视频钳制 |
 
 ## Load Video (Lesca)
 
@@ -221,6 +233,45 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 * 错误处理：目录不存在、不是目录、前缀为空、没有匹配前缀的视频文件、相对路径
   逃出 ComfyUI 根目录，都会抛出带说明的错误。
 
+## Video Add Noise (Lesca)
+
+从视频中截取头部或尾部的一段帧，并为这些帧添加互相独立的逐帧噪声，强度按层
+调度。`video` 输入接受 **Load Video (Lesca)** 的 `video` 输出（惰性的
+`VideoFromFile`）或任何其它视频节点的输出。
+
+该节点为转换型（非输出）节点：只输出加噪后的 `images`，供下游节点使用。
+
+### 输入
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `video` | `Video` | 要截取帧的视频，例如直接来自 Load Video (Lesca)。 |
+| `mode` | `Combo` | `head`：截取最前面的 N 帧（默认）；`tail`：截取最末尾的 N 帧。 |
+| `frame_num_list` | `String` | 每层的帧数，例如 `18 2 1 1`（空白或逗号分隔）——4 层，共 22 帧。 |
+| `strenth_list` | `String` | 每层的噪声强度，例如 `0.4 0.3 0.1 0.04`——与 `frame_num_list` 每层一一对应。 |
+| `seed` | `Int` | 可选，默认 `0`。`0` = 完全随机（每次运行都不同）；`seed > 0` 时第 `i` 帧用 `seed + i` 播种，结果可复现，且各帧噪声仍互不相同。 |
+
+### 输出
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `images` | `Image` | 加噪后的帧，按截取顺序排列。 |
+
+### 行为
+
+* 截帧：`total = sum(frame_num_list)` 帧从头部或尾部截取。文件型输入走懒式
+  `as_trimmed` 窗口（与内置 `VideoFrameSample` 的 head/tail 策略相同的参考），
+  只解码所需帧；张量型输入或已带裁剪窗口的输入直接切片，避免重编码。
+* 逐帧噪声：每一帧独立加噪，与内置 `ImageAddNoise` 相同（`image + strength *
+  randn`，裁剪到 [0, 1]）——但噪声每帧重新随机，因此同强度的两帧仍然不同。帧的
+  alpha 通道（透明，`C == 4`）原样透传。
+* 分层强度：第 `i` 帧取累积 `frame_num_list` 帧数首次超过 `i` 的那一层的强度——
+  默认 `18 2 1 1` / `0.4 0.3 0.1 0.04` 是一段淡出噪声斜坡。
+* 层数必须对应：`frame_num_list` 与 `strenth_list` 的层数必须相同，否则节点抛
+  异常（工作流无法运行）。
+* 短视频钳制：视频帧数少于 `total` 时，截取数量取全部可用帧
+  （`take = min(total, N)`），多余的帧由靠前的层吸收。
+
 ## 安装
 
 把这个文件夹放进 ComfyUI 的 custom_nodes 目录：
@@ -234,7 +285,7 @@ ComfyUI/custom_nodes/comfyui-lesca-nodes/
 
 ## 文件
 
-* `__init__.py` — 包入口；暴露 `comfy_entrypoint`（同时注册五个节点与 Load
+* `__init__.py` — 包入口；暴露 `comfy_entrypoint`（同时注册六个节点与 Load
   Video 预览路由的组合扩展），以及 `WEB_DIRECTORY = "web"`。
 * `lesca_load_video.py` — Load Video 节点、路径解析逻辑、
   `/lesca/load_video/preview` 流式端点，以及文件缺失时的白色占位回退。
@@ -247,7 +298,9 @@ ComfyUI/custom_nodes/comfyui-lesca-nodes/
 * `lesca_video_combine.py` — Video Combine 节点（前缀扫描、文件名升序、
   `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` 产物自排除、ffmpeg-python 流拷贝
   合并与重编码兜底、源文件集合执行缓存指纹）。
+* `lesca_video_add_noise.py` — Video Add Noise 节点（head/tail 截帧走懒式
+  `as_trimmed` 窗口、独立的逐帧噪声与分层强度调度、可选 seed、短视频钳制）。
 * `web/extension.js` — 自定义前端：Load Video 的 **Update** 按钮 + 实时预览。
 * `pyproject.toml` — ComfyUI 自定义节点管理器用的元数据（`[tool.comfyui] web =
   "web"` 负责挂载前端）。
-* `specs.md` — 原始需求规格（目标 1–5，中文）。
+* `specs.md` — 原始需求规格（目标 1–6，中文）。

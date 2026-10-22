@@ -5,8 +5,19 @@
 Custom ComfyUI nodes for Lesca.
 
 Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
-**Video Info (Lesca)**, **Video to Images (Lesca)** and
-**Video Combine (Lesca)**.
+**Video Info (Lesca)**, **Video to Images (Lesca)**, **Video Combine
+(Lesca)** and **Video Add Noise (Lesca)**.
+
+## Node Overview
+
+| Node | What it does | Key capabilities |
+|------|--------------|------------------|
+| [Load Video (Lesca)](#load-video-lesca) | Loads a video from an explicit file path, mirroring the built-in `LoadVideo` output | Any path (relative to the ComfyUI root, or absolute); live in-node preview without running the node; deterministic white placeholder when the file is missing |
+| [Save Video (Lesca)](#save-video-lesca) | Merges the built-in `Create Video` + `Save Video` into a single node | User-specified save path (no `_000001_` counter suffix); frame + audio trimming; trimmed `images` / `audio` passed through as outputs |
+| [Video Info (Lesca)](#video-info-lesca) | Reports a video's properties as individual outputs, for workflow branching | `fps` / `bit_depth` / `color_space` / `width` / `height` / `frame_count`, plus a one-per-line `video_info` string; output node, runs standalone |
+| [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); audio span sliced to match the exported frames |
+| [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in a directory into one file | Triggered by any upstream output; stream-copy merge with a re-encode fallback; previous merge outputs self-excluded from the scan; execution cache keyed by the source-file fingerprint |
+| [Video Add Noise (Lesca)](#video-add-noise-lesca) | Cuts a head/tail block of frames and adds independent per-frame noise | Per-layer strength schedule (`frame_num_list` / `strenth_list`); optional seed for reproducible per-frame noise; short-video clamp |
 
 ## Load Video (Lesca)
 
@@ -255,6 +266,53 @@ directory it was saved into.
   files matching the prefix, and a relative path escaping the ComfyUI root
   directory each raise with a descriptive message.
 
+## Video Add Noise (Lesca)
+
+Cuts a head or tail block of frames from a video and adds independent
+per-frame noise to them, with a per-layer strength schedule. The `video`
+input accepts the `video` output of **Load Video (Lesca)** (a lazy
+`VideoFromFile`) or any other video node.
+
+The node is a transform (non-output) node: it only emits the noise-added
+`images` batch, which is meant to be fed into a downstream node.
+
+### Inputs
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `video` | `Video` | The video to cut frames from, e.g. straight from Load Video (Lesca). |
+| `mode` | `Combo` | `head`: cut the first N frames (the default); `tail`: cut the last N. |
+| `frame_num_list` | `String` | Frames per layer, e.g. `18 2 1 1` (whitespace- or comma-separated) — 4 layers, 22 frames total. |
+| `strenth_list` | `String` | Noise strength per layer, e.g. `0.4 0.3 0.1 0.04` — one value per `frame_num_list` layer. |
+| `seed` | `Int` | Optional, default `0`. `0` = fully random noise (different every run). `seed > 0` seeds frame `i` with `seed + i`, so the result is reproducible and every frame's noise still differs. |
+
+### Output
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `images` | `Image` | The noise-added frames, in cut order. |
+
+### Behavior
+
+* Frame cut: `total = sum(frame_num_list)` frames are cut from the head or tail.
+  File-backed input uses the lazy `as_trimmed` window (the same reference as the
+  built-in `VideoFrameSample` head/tail strategies), so only the needed frames
+  are decoded; tensor-backed inputs or inputs already carrying a trim window are
+  sliced directly instead of re-encoded.
+* Per-frame noise: each frame is noised independently, the way the built-in
+  `ImageAddNoise` does (`image + strength * randn`, clipped to [0, 1]) — but the
+  noise is re-randomized per frame, so two frames at the same strength still
+  differ. A frame's alpha channel (transparency, `C == 4`) is copied through
+  untouched.
+* Per-layer strength: frame `i` takes the strength of the layer whose cumulative
+  `frame_num_list` count first exceeds `i` — the default `18 2 1 1` /
+  `0.4 0.3 0.1 0.04` is a fade-out noise ramp.
+* Layer count must match: `frame_num_list` and `strenth_list` must have the same
+  number of layers, otherwise the node raises (the workflow cannot run).
+* Short videos clamp: when the video has fewer frames than `total`, the cut
+  takes every available frame (`take = min(total, N)`) and the extra frames are
+  absorbed by the earlier layers.
+
 ## Installation
 
 Drop this folder into ComfyUI's custom-node directory:
@@ -270,7 +328,7 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
 ## Files
 
 * `__init__.py` — package entry point; exposes `comfy_entrypoint` (a combined
-  extension registering all five nodes and Load Video's preview route) and
+  extension registering all six nodes and Load Video's preview route) and
   `WEB_DIRECTORY = "web"`.
 * `lesca_load_video.py` — Load Video node, path-resolution logic, the
   `/lesca/load_video/preview` streaming endpoint, and the missing-file white
@@ -285,8 +343,11 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
   filename order, `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` output with
   self-exclusion on re-runs, ffmpeg-python stream-copy merge with a re-encode
   fallback, source-set execution-cache fingerprint).
+* `lesca_video_add_noise.py` — Video Add Noise node (head/tail frame cut via
+  the lazy `as_trimmed` window, independent per-frame noise with a per-layer
+  strength schedule, optional seed, short-video clamp).
 * `web/extension.js` — custom frontend: Load Video's **Update** button + live
   preview.
 * `pyproject.toml` — node metadata for the ComfyUI custom-node manager
   (`[tool.comfyui] web = "web"` serves the frontend).
-* `specs.md` — the original requirement spec (goals 1–5, Chinese).
+* `specs.md` — the original requirement spec (goals 1–6, Chinese).

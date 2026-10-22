@@ -5,7 +5,7 @@ and looks for a ``comfy_entrypoint`` callable that returns a
 ``comfy_api.latest.ComfyExtension`` (the V3 registration mechanism, the same one
 used by ComfyUI's own ``comfy_extras/nodes_video.py``).
 
-Five nodes are registered:
+Six nodes are registered:
 
 * ``LoadVideoLesca``    — Load Video (Lesca), a fully path-specifiable video loader.
 * ``SaveVideoLesca``    — Save Video (Lesca), merges the built-in Create Video and
@@ -23,6 +23,10 @@ Five nodes are registered:
   ``<prefix>_merged-*.mp4`` outputs ignored) into one merged video file via the
   ffmpeg CLI (stream copy, with a re-encode fallback for incompatible streams);
   an arbitrary upstream output serves as a trigger for the run.
+* ``VideoAddNoiseLesca`` — Video Add Noise (Lesca), cuts a head/tail block of
+  frames from a video and adds independent per-frame Gaussian noise with a
+  per-layer strength schedule (frame_num_list / strenth_list); an optional seed
+  makes the per-frame noise reproducible (seed 0 is fully random).
 
 The Load Video module owns its node, its preview route, and its extension; the
 combined extension below delegates to it so the package exposes one entry point.
@@ -55,6 +59,9 @@ from lesca_video_to_images import (  # noqa: E402
 from lesca_video_combine import (  # noqa: E402
     VideoCombineLesca,
 )
+from lesca_video_add_noise import (  # noqa: E402
+    VideoAddNoiseLesca,
+)
 
 # Serve the custom frontend ("Update" button + live preview for Load Video
 # (Lesca)). WEB_DIRECTORY is
@@ -73,7 +80,7 @@ class LescaExtension(ComfyExtension):
 
     @classmethod
     async def get_node_list(cls) -> list:
-        return [LoadVideoLesca, SaveVideoLesca, VideoInfoLesca, VideoToImagesLesca, VideoCombineLesca]
+        return [LoadVideoLesca, SaveVideoLesca, VideoInfoLesca, VideoToImagesLesca, VideoCombineLesca, VideoAddNoiseLesca]
 
 
 async def comfy_entrypoint() -> LescaExtension:
@@ -87,6 +94,7 @@ __all__ = [
     "VideoInfoLesca",
     "VideoToImagesLesca",
     "VideoCombineLesca",
+    "VideoAddNoiseLesca",
     "LescaExtension",
     "comfy_entrypoint",
 ]
