@@ -2,7 +2,7 @@
 
 ## 目标 1: Load Video (Lesca) 节点
 
-Config UI中自带的视频加载节点无法指定路径。请参考Comfy UI 自带的 Load Video 节点，在本目录中创建一个新的Load Video节点 - Load Video (Lesca) ：
+Comfy UI中自带的视频加载节点无法指定路径。请参考Comfy UI 自带的 Load Video 节点，在本目录中创建一个新的Load Video节点 - Load Video (Lesca) ：
 * 输入：
   * filename: 字符串类型，用户指定视频文件路径
 * 输出：
@@ -14,7 +14,7 @@ Config UI中自带的视频加载节点无法指定路径。请参考Comfy UI �
 
 ## 目标 2: Save Video (Lesca) 节点
 
-Config UI中自带的节点将图片保存成视频需要使用Create Video和Save Video两个节点。请参考Comfy UI 自带的这两个节点，在本目录中创建一个新的Save Video (Lesca)节点，合并Create Video和Save Video的功能。
+Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Save Video两个节点。请参考Comfy UI 自带的这两个节点，在本目录中创建一个新的Save Video (Lesca)节点，合并Create Video和Save Video的功能。
 
 输入输出参数如下。
 * 输入：
@@ -48,6 +48,10 @@ Config UI中自带的节点将图片保存成视频需要使用Create Video和Sa
   * width: 整数类型，视频的宽度。
   * height: 整数类型，视频的高度。
   * frame_count: 整数类型，视频的总帧数。
+
+要求：
+* 该节点是输出节点（is_output_node=True）：即使没有连接任何下游节点，Queue 也会执行它。
+* 节点运行后，把 video_info 输出的内容在节点自带的只读文本框中显示（前端附加的多行文本框，未运行时显示占位提示）。
 
 
 ## 目标 4: Video to Images (Lesca) 节点

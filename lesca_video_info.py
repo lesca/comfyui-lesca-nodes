@@ -20,6 +20,14 @@ own video nodes use (``get_frame_rate`` / ``get_bit_depth`` / ``get_color_space`
 metadata directly (no frame decoding, no full in-memory load) and
 tensor-based videos (e.g. the output of Save Video (Lesca)) report their
 in-memory properties.
+
+The node is an output node (``is_output_node=True``): the graph executes it
+even when nothing is wired to its outputs, so it can be used standalone to
+display video properties. On execution it also returns a UI output
+(``{"video_info": (video_info,)}``) which makes the backend send an
+``executed`` websocket message; the frontend extension (``web/extension.js``)
+listens for it and fills a read-only text box on the node with the
+``video_info`` string.
 """
 
 from __future__ import annotations
@@ -36,6 +44,7 @@ class VideoInfoLesca(io.ComfyNode):
             category="video",
             search_aliases=["video info lesca", "video metadata", "video properties", "video fps bit depth"],
             description="Report a video's frame rate, bit depth, color space, width, height and total frame count.",
+            is_output_node=True,
             inputs=[
                 io.Video.Input(
                     "video",
@@ -94,6 +103,11 @@ class VideoInfoLesca(io.ComfyNode):
                 f"frame_count: {frame_count}",
             ]
         )
+        # The ``ui`` output is what makes the backend send an ``executed``
+        # websocket message (execution.py only sends it when the node returned
+        # a UI dict, the same pattern as the built-in PreviewAny/Save Text).
+        # The frontend extension turns ``output.video_info`` into the node's
+        # read-only text box.
         return io.NodeOutput(
             video_info,
             fps,
@@ -102,4 +116,5 @@ class VideoInfoLesca(io.ComfyNode):
             width,
             height,
             frame_count,
+            ui={"video_info": (video_info,)},
         )

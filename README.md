@@ -120,6 +120,11 @@ individual outputs, a `video_info` string output lists every field on its own
 line (`fps`, `bit_depth`, `color_space`, `width`, `height`, `frame_count`), for
 logging or display.
 
+The node is an output node: queueing the graph runs it even when nothing is
+wired to any of its outputs, so it can be used standalone to inspect a video.
+A read-only text box embedded in the node displays the `video_info` string
+produced by the most recent run (a placeholder is shown before the first run).
+
 ### Input
 
 | Field   | Type    | Meaning |

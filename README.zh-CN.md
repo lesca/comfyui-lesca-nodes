@@ -106,6 +106,10 @@ Video`，`format`（嵌套 `codec` → `encoding` → `crf`）来自 `Save Video
 字符串输出，把所有字段各占一行地列出来（`fps`、`bit_depth`、`color_space`、
 `width`、`height`、`frame_count`），用于日志或显示。
 
+该节点为输出节点：即使没有任何下游节点连接，Queue 也会执行它，因此可以单独
+使用来查看视频属性。节点自带一个只读文本框，运行后在其中显示 `video_info`
+字符串（未运行时显示占位提示）。
+
 ### 输入
 
 | 字段 | 类型 | 说明 |

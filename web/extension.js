@@ -1,28 +1,38 @@
-// Custom frontend for the Load Video (Lesca) node.
+// Custom frontend for the Load Video (Lesca) and Video Info (Lesca) nodes.
 //
-// Adds an "Update" button directly below the filename field. Clicking it — or
-// editing the filename — shows a live video preview WITHOUT running the node,
-// by streaming the file from the backend's /lesca/load_video/preview endpoint
-// (which handles arbitrary / absolute paths that the built-in /view cannot).
+// Load Video: adds an "Update" button directly below the filename field.
+// Clicking it — or editing the filename — shows a live video preview WITHOUT
+// running the node, by streaming the file from the backend's
+// /lesca/load_video/preview endpoint (which handles arbitrary / absolute paths
+// that the built-in /view cannot).
+//
+// Video Info: adds a read-only text box that shows the `video_info` string
+// produced by the node. The node is an output node and its execute() returns
+// `ui={"video_info": (...)}` so the backend sends an `executed` websocket
+// message after every run; the frontend invokes node.onExecuted(output) with
+// it, and we copy output.video_info into the text box.
 //
 // This file is loaded as a standalone ES module by the ComfyUI frontend (see
 // pyproject.toml [tool.comfyui] web = "web"). It therefore cannot import the
 // frontend's bundled modules; it relies only on the globals the frontend
 // exposes (window.app, window.graph) and the litegraph node API.
 
-const NODE_NAME = 'LoadVideoLesca'
+const LOAD_VIDEO_NODE = 'LoadVideoLesca'
+const VIDEO_INFO_NODE = 'VideoInfoLesca'
 const VIDEO_WIDGET_NAME = 'lesca-video-preview'
 const BUTTON_NAME = 'Update Preview'
+const VIDEO_INFO_WIDGET_NAME = 'video_info'
 // Guard so a node is only wired up once (nodeCreated + existing-node pass).
 const WIRED = Symbol.for('lesca.load-video.wired')
+const WIRED_INFO = Symbol.for('lesca.video-info.wired')
 
 // Diagnostic markers — confirm in the browser console (F12) that the extension
 // is loaded and wired. Remove these lines once the button is verified working.
 const log = (...a) => console.log('[Lesca.LoadVideoPreview]', ...a)
 log('extension.js loaded')
 
-const isOurNode = (node) =>
-  !!node && (node.type === NODE_NAME || node.comfyClass === NODE_NAME)
+const isNode = (node, type) =>
+  !!node && (node.type === type || node.comfyClass === type)
 
 // Value of a named input: if the slot is linked (e.g. to a Text node), read
 // the *source* node's widget value — the local widget still holds its last
@@ -98,7 +108,7 @@ const showPreview = (node) => {
 
 // Wire up a single Load Video (Lesca) node instance.
 const setupNode = (node) => {
-  if (!isOurNode(node) || node[WIRED]) return
+  if (!isNode(node, LOAD_VIDEO_NODE) || node[WIRED]) return
   node[WIRED] = true
   log('wiring node', node.id, 'type=', node.type, 'comfyClass=', node.comfyClass)
 
@@ -123,13 +133,57 @@ const setupNode = (node) => {
   if (readInputs(node).filename) showPreview(node)
 }
 
+// Wire up a single Video Info (Lesca) node instance: add the read-only text
+// box that displays the video_info string produced by the last run.
+const setupVideoInfoNode = (node) => {
+  if (!isNode(node, VIDEO_INFO_NODE) || node[WIRED_INFO]) return
+  node[WIRED_INFO] = true
+  log('wiring video info node', node.id, 'type=', node.type, 'comfyClass=', node.comfyClass)
+
+  const ta = document.createElement('textarea')
+  ta.readOnly = true
+  ta.spellcheck = false
+  ta.value = ''
+  ta.placeholder = '运行节点后在此显示 video_info'
+  ta.style.cssText =
+    'width:100%;box-sizing:border-box;min-height:150px;resize:none;' +
+    'background:rgba(0,0,0,.35);color:#ccc;border:1px solid #555;' +
+    'border-radius:4px;padding:6px;outline:none;' +
+    "font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace"
+
+  // Raw-element DOM widget (the frontend's LGraphNode.addDOMWidget accepts any
+  // HTMLElement); serialize:false keeps the transient output out of the
+  // workflow JSON, hideOnZoom:false keeps it readable at low zoom.
+  node.addDOMWidget(VIDEO_INFO_WIDGET_NAME, 'textarea', ta, {
+    serialize: false,
+    hideOnZoom: false,
+    getMinHeight: () => 150,
+    surfaces: { canvas: 'shown', vueNode: 'never', panel: 'never' }
+  })
+
+  // The frontend calls node.onExecuted(output) for the `executed` websocket
+  // message; output.video_info is the string as a (batch) list.
+  const prev = node.onExecuted
+  node.onExecuted = (output) => {
+    prev?.call(node, output)
+    const v = output?.video_info
+    ta.value = Array.isArray(v) ? v.join('\n\n') : String(v ?? '')
+  }
+}
+
 const register = () => {
   const app = window.app
   if (!app) return false
   app.registerExtension({
     name: 'Lesca.LoadVideoPreview',
     nodeCreated: (node) => {
-      if (isOurNode(node)) setupNode(node)
+      if (isNode(node, LOAD_VIDEO_NODE)) setupNode(node)
+    }
+  })
+  app.registerExtension({
+    name: 'Lesca.VideoInfoDisplay',
+    nodeCreated: (node) => {
+      if (isNode(node, VIDEO_INFO_NODE)) setupVideoInfoNode(node)
     }
   })
   log('extension registered')
@@ -140,7 +194,10 @@ const register = () => {
     const graph = window.graph
     if (!graph?._nodes) return false
     let count = 0
-    for (const n of graph._nodes) if (isOurNode(n)) { setupNode(n); count++ }
+    for (const n of graph._nodes) {
+      if (isNode(n, LOAD_VIDEO_NODE)) { setupNode(n); count++ }
+      if (isNode(n, VIDEO_INFO_NODE)) { setupVideoInfoNode(n); count++ }
+    }
     log('existing nodes wired:', count, 'total nodes:', graph._nodes.length)
     return count > 0
   }
