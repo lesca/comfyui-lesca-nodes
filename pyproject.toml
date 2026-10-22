@@ -4,7 +4,9 @@ description = "Custom ComfyUI nodes for Lesca. Load Video (Lesca) loads a video 
 version = "0.1.0"
 requires-python = ">= 3.9"
 license = "MIT"
-dependencies = []
+dependencies = [
+    "ffmpeg-python",
+]
 
 [project.urls]
 Homepage = "https://github.com/lesca/comfyui-lesca-nodes"

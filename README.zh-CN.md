@@ -4,8 +4,8 @@
 
 Lesca 的自定义 ComfyUI 节点。
 
-目前提供 **Load Video (Lesca)**、**Save Video (Lesca)**、**Video Info (Lesca)**
-和 **Video to Images (Lesca)** 四个节点。
+目前提供 **Load Video (Lesca)**、**Save Video (Lesca)**、**Video Info
+(Lesca)**、**Video to Images (Lesca)** 和 **Video Combine (Lesca)** 五个节点。
 
 ## Load Video (Lesca)
 
@@ -182,6 +182,45 @@ Video`，`format`（嵌套 `codec` → `encoding` → `crf`）来自 `Save Video
 或 pts 怪癖导致窗口解码结果不足）回退到全量解码，并对已加载的张量应用相同的
 索引映射；两条路径输出逐像素一致。
 
+## Video Combine (Lesca)
+
+把指定目录中指定前缀的视频文件合并成一个文件，由任意上游输出触发——例如把
+Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片段就会自动触发
+对其所在目录的合并。
+
+### 输入
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `any` | `Any`（可选） | 触发输入：接受**任意**上游类型的输出即可启动本节点的运行（例如 `Save Video (Lesca)` 的 `filename`，新片段保存完成即触发合并）。可选——不连线也能单独运行。 |
+| `folder` | `String` | 要扫描的目录，例如 `output/video`（默认值）。相对路径基于 ComfyUI **根目录**解析；绝对路径原样使用。可连接到字符串产出节点。 |
+| `prefix` | `String` | 要合并的片段文件名前缀，例如 `dance`。可连接到字符串产出节点。 |
+
+### 输出
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `filename` | `String` | 合并后视频的绝对路径，例如 `/…/output/video/dance_merged-2026_10_18_16_33_44.mp4`。 |
+
+### 行为
+
+* 节点遍历 `folder`，保留所有以 `prefix` 开头的**视频**文件（`.txt` 等非视频
+  文件由 ComfyUI 的视频内容类型过滤器跳过），按**文件名升序**排列，合并成一个
+  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4`，保存在同一目录。
+* 之前生成的 `<prefix>_merged-…mp4` 会被**排除在扫描之外**，因此对同一目录再次
+  运行节点时合并的是原始片段，绝不会合并已经合并过的文件。
+* 合并策略：ffmpeg-python 的 concat demuxer 加 `-c copy`，直接拼接数据流、不
+  解码（无损且快，适用于同一管线产出的片段）。当流拷贝因输入不兼容（编码、
+  分辨率、帧率不一致）而失败时，节点自动回退到 concat filter 重编码为一个
+  H.264 流（丢弃音频）。两条命令行均由 ffmpeg-python 包构建——它仍要求系统
+  PATH 上有 ffmpeg 二进制。
+* 该节点是输出节点：即使没有任何下游节点连接 `filename` 输出，Queue 也会执行
+  它。
+* 执行缓存以匹配片段的 `(basename, mtime)` 集合指纹为键：新增或修改片段会产出
+  新的合并文件，目录无变化时复用缓存输出，不会每次运行都写一个新合并文件。
+* 错误处理：目录不存在、不是目录、前缀为空、没有匹配前缀的视频文件、相对路径
+  逃出 ComfyUI 根目录，都会抛出带说明的错误。
+
 ## 安装
 
 把这个文件夹放进 ComfyUI 的 custom_nodes 目录：
@@ -195,7 +234,7 @@ ComfyUI/custom_nodes/comfyui-lesca-nodes/
 
 ## 文件
 
-* `__init__.py` — 包入口；暴露 `comfy_entrypoint`（同时注册四个节点与 Load
+* `__init__.py` — 包入口；暴露 `comfy_entrypoint`（同时注册五个节点与 Load
   Video 预览路由的组合扩展），以及 `WEB_DIRECTORY = "web"`。
 * `lesca_load_video.py` — Load Video 节点、路径解析逻辑、
   `/lesca/load_video/preview` 流式端点，以及文件缺失时的白色占位回退。
@@ -205,7 +244,10 @@ ComfyUI/custom_nodes/comfyui-lesca-nodes/
   depth / color space / width / height / frame count）。
 * `lesca_video_to_images.py` — Video to Images 节点（窗口化解码，
   force-rate → trim → frame-cap → resize 管线，音频区间切片）。
+* `lesca_video_combine.py` — Video Combine 节点（前缀扫描、文件名升序、
+  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` 产物自排除、ffmpeg-python 流拷贝
+  合并与重编码兜底、源文件集合执行缓存指纹）。
 * `web/extension.js` — 自定义前端：Load Video 的 **Update** 按钮 + 实时预览。
 * `pyproject.toml` — ComfyUI 自定义节点管理器用的元数据（`[tool.comfyui] web =
   "web"` 负责挂载前端）。
-* `specs.md` — 原始需求规格（目标 1–4，中文）。
+* `specs.md` — 原始需求规格（目标 1–5，中文）。

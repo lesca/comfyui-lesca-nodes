@@ -5,7 +5,8 @@
 Custom ComfyUI nodes for Lesca.
 
 Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
-**Video Info (Lesca)** and **Video to Images (Lesca)**.
+**Video Info (Lesca)**, **Video to Images (Lesca)** and
+**Video Combine (Lesca)**.
 
 ## Load Video (Lesca)
 
@@ -206,6 +207,54 @@ window, unknown frame rate or frame count in the metadata, or a decode that
 comes back short for pts quirks) fall back to a full decode that applies the
 same index map to the loaded tensors; both paths produce identical frames.
 
+## Video Combine (Lesca)
+
+Merges every same-prefix video file in a directory into one file, driven by a
+trigger from any upstream output — e.g. wire the `filename` output of Save
+Video (Lesca) into this node and every newly saved clip triggers a merge of the
+directory it was saved into.
+
+### Inputs
+
+| Field    | Type | Meaning |
+|----------|------|---------|
+| `any`    | `Any` (optional) | A trigger: the output of **any** upstream type starts the node's run (e.g. `Save Video (Lesca)`'s `filename`, which fires the merge right after a new clip is saved). Optional — the node also runs standalone. |
+| `folder` | `String` | The directory to scan, e.g. `output/video` (the default). A relative path resolves against the ComfyUI **root** directory; an absolute path is used as-is. May be connected to a string-producing node. |
+| `prefix` | `String` | The filename prefix of the clips to merge, e.g. `dance`. May be connected to a string-producing node. |
+
+### Output
+
+| Field      | Type     | Meaning |
+|------------|----------|---------|
+| `filename` | `String` | Absolute path of the merged video file, e.g. `/…/output/video/dance_merged-2026_10_18_16_33_44.mp4`. |
+
+### Behavior
+
+* The node walks `folder`, keeps every **video** file whose name starts with
+  `prefix` (non-video files such as `.txt` are skipped by ComfyUI's
+  video-content-type filter), sorts them by **ascending filename**, and
+  concatenates them into one `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` in the
+  same directory.
+* Previously produced `<prefix>_merged-…mp4` outputs are **excluded from the
+  scan**, so running the node on the same directory again merges the original
+  clips, never an already-merged file.
+* Merge strategy: ffmpeg-python's concat demuxer with `-c copy` splices the
+  streams without decoding (lossless and fast, for clips from the same
+  pipeline). When stream copy fails because the inputs are incompatible
+  (different codecs, resolutions or frame rates), the node falls back
+  automatically to a concat-filter re-encode into one H.264 stream (audio
+  dropped). Both command lines are built with the ffmpeg-python package —
+  which still requires the ffmpeg binary on PATH.
+* The node is an output node: queueing the graph executes it even when nothing
+  is wired to its `filename` output.
+* Execution caching is keyed by a fingerprint of the matched source files'
+  `(basename, mtime)` set: a new or modified clip produces a fresh merged file,
+  while an unchanged directory reuses the cached output instead of writing
+  another merged file on every run.
+* Errors: a missing folder, a non-directory folder, an empty prefix, no video
+  files matching the prefix, and a relative path escaping the ComfyUI root
+  directory each raise with a descriptive message.
+
 ## Installation
 
 Drop this folder into ComfyUI's custom-node directory:
@@ -221,7 +270,7 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
 ## Files
 
 * `__init__.py` — package entry point; exposes `comfy_entrypoint` (a combined
-  extension registering all four nodes and Load Video's preview route) and
+  extension registering all five nodes and Load Video's preview route) and
   `WEB_DIRECTORY = "web"`.
 * `lesca_load_video.py` — Load Video node, path-resolution logic, the
   `/lesca/load_video/preview` streaming endpoint, and the missing-file white
@@ -232,8 +281,12 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
   color space / width / height / frame count).
 * `lesca_video_to_images.py` — Video to Images node (windowed decode,
   force-rate → trim → frame-cap → resize pipeline, audio span slicing).
+* `lesca_video_combine.py` — Video Combine node (prefix-scan in ascending
+  filename order, `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` output with
+  self-exclusion on re-runs, ffmpeg-python stream-copy merge with a re-encode
+  fallback, source-set execution-cache fingerprint).
 * `web/extension.js` — custom frontend: Load Video's **Update** button + live
   preview.
 * `pyproject.toml` — node metadata for the ComfyUI custom-node manager
   (`[tool.comfyui] web = "web"` serves the frontend).
-* `specs.md` — the original requirement spec (goals 1–4, Chinese).
+* `specs.md` — the original requirement spec (goals 1–5, Chinese).

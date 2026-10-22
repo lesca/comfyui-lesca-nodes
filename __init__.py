@@ -5,7 +5,7 @@ and looks for a ``comfy_entrypoint`` callable that returns a
 ``comfy_api.latest.ComfyExtension`` (the V3 registration mechanism, the same one
 used by ComfyUI's own ``comfy_extras/nodes_video.py``).
 
-Four nodes are registered:
+Five nodes are registered:
 
 * ``LoadVideoLesca``    — Load Video (Lesca), a fully path-specifiable video loader.
 * ``SaveVideoLesca``    — Save Video (Lesca), merges the built-in Create Video and
@@ -18,6 +18,11 @@ Four nodes are registered:
   resizing; outputs the images, the trimmed audio, the effective frame rate and
   a reconstructed video sharing the same tensors (the exported frame count is
   available via the Video Info (Lesca) node's ``frame_count``).
+* ``VideoCombineLesca`` — Video Combine (Lesca), concatenates every same-prefix
+  video file in a directory (ascending filename order, previously merged
+  ``<prefix>_merged-*.mp4`` outputs ignored) into one merged video file via the
+  ffmpeg CLI (stream copy, with a re-encode fallback for incompatible streams);
+  an arbitrary upstream output serves as a trigger for the run.
 
 The Load Video module owns its node, its preview route, and its extension; the
 combined extension below delegates to it so the package exposes one entry point.
@@ -47,6 +52,9 @@ from lesca_video_info import (  # noqa: E402
 from lesca_video_to_images import (  # noqa: E402
     VideoToImagesLesca,
 )
+from lesca_video_combine import (  # noqa: E402
+    VideoCombineLesca,
+)
 
 # Serve the custom frontend ("Update" button + live preview for Load Video
 # (Lesca)). WEB_DIRECTORY is
@@ -65,7 +73,7 @@ class LescaExtension(ComfyExtension):
 
     @classmethod
     async def get_node_list(cls) -> list:
-        return [LoadVideoLesca, SaveVideoLesca, VideoInfoLesca, VideoToImagesLesca]
+        return [LoadVideoLesca, SaveVideoLesca, VideoInfoLesca, VideoToImagesLesca, VideoCombineLesca]
 
 
 async def comfy_entrypoint() -> LescaExtension:
@@ -78,6 +86,7 @@ __all__ = [
     "SaveVideoLesca",
     "VideoInfoLesca",
     "VideoToImagesLesca",
+    "VideoCombineLesca",
     "LescaExtension",
     "comfy_entrypoint",
 ]
