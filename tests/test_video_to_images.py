@@ -35,7 +35,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, "/workspace/sources/comfyui")
-sys.path.insert(0, "/workspace/projects/comfyui-lesca-nodes")
+sys.path.insert(0, "/workspace/projects/2026_10_18-comfyui-lesca-nodes")
 
 from fractions import Fraction
 
@@ -479,7 +479,7 @@ make_file_video(big, n_frames=300)  # 300 x 480x640 float32 ~= 1.1 GB if fully d
 MEM_SCRIPT = '''
 import resource, sys
 sys.path.insert(0, "/workspace/sources/comfyui")
-sys.path.insert(0, "/workspace/projects/comfyui-lesca-nodes")
+sys.path.insert(0, "/workspace/projects/2026_10_18-comfyui-lesca-nodes")
 from comfy_api.latest import InputImpl
 from lesca_video_to_images import VideoToImagesLesca
 v = InputImpl.VideoFromFile(sys.argv[1])

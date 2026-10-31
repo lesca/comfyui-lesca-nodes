@@ -5,7 +5,7 @@ and looks for a ``comfy_entrypoint`` callable that returns a
 ``comfy_api.latest.ComfyExtension`` (the V3 registration mechanism, the same one
 used by ComfyUI's own ``comfy_extras/nodes_video.py``).
 
-Six nodes are registered:
+Seven nodes are registered:
 
 * ``LoadVideoLesca``    — Load Video (Lesca), a fully path-specifiable video loader.
 * ``SaveVideoLesca``    — Save Video (Lesca), merges the built-in Create Video and
@@ -27,6 +27,11 @@ Six nodes are registered:
   frames from a video and adds independent per-frame Gaussian noise with a
   per-layer strength schedule (frame_num_list / strenth_list); an optional seed
   makes the per-frame noise reproducible (seed 0 is fully random).
+* ``ContextClipsLesca`` — Context Clips (Lesca), plans the clip schedule for a
+  target video: reports the target frame count, total clip count, last-clip
+  frame count and the current clip's frame count as pure arithmetic on the
+  video's container metadata (no decoding); an output node that also shows the
+  four fields in a read-only text box.
 
 The Load Video module owns its node, its preview route, and its extension; the
 combined extension below delegates to it so the package exposes one entry point.
@@ -62,6 +67,9 @@ from lesca_video_combine import (  # noqa: E402
 from lesca_video_add_noise import (  # noqa: E402
     VideoAddNoiseLesca,
 )
+from lesca_context_clips import (  # noqa: E402
+    ContextClipsLesca,
+)
 
 # Serve the custom frontend ("Update" button + live preview for Load Video
 # (Lesca)). WEB_DIRECTORY is
@@ -80,7 +88,7 @@ class LescaExtension(ComfyExtension):
 
     @classmethod
     async def get_node_list(cls) -> list:
-        return [LoadVideoLesca, SaveVideoLesca, VideoInfoLesca, VideoToImagesLesca, VideoCombineLesca, VideoAddNoiseLesca]
+        return [LoadVideoLesca, SaveVideoLesca, VideoInfoLesca, VideoToImagesLesca, VideoCombineLesca, VideoAddNoiseLesca, ContextClipsLesca]
 
 
 async def comfy_entrypoint() -> LescaExtension:
@@ -95,6 +103,7 @@ __all__ = [
     "VideoToImagesLesca",
     "VideoCombineLesca",
     "VideoAddNoiseLesca",
+    "ContextClipsLesca",
     "LescaExtension",
     "comfy_entrypoint",
 ]

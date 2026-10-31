@@ -115,6 +115,43 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
 * 当视频可用帧数少于要截取的总帧数时，截取数量钳制为可用帧数（`take = min(total, N)`），多余的帧由靠前的层吸收，不报错。
 * 本节点为非输出节点（转换型），只输出 `images`，供下游节点使用。
 
+## 目标 7: Context Clips (Lesca) 节点
+
+* 输入：
+  * video: io.Video 类型。接收上游节点的视频输出。获取视频的 `frame_count` 和 `fps` 信息 （和 Video Info 节点一样）。
+  * target_fps: int 类型。默认0，表示保持不变。
+  * clip_frames: int 类型。默认 124。
+  * context_frames: int 类型。默认 22。
+  * init_index: int 类型。默认 0.
+* 输出：
+  * target_frame_count: int 类型。目标视频的总帧数。计算方法参考下面的代码。
+  * total_clips: int 类型。目标视频的总片段数。计算方法参考下面的代码。
+  * last_clip_frames: int 类型。最后一个片段的帧数。计算方法参考下面的代码。
+
+```python
+import math
+
+# 1. 计算目标总帧数（避免重复计算）
+target_frame_count = (frame_count / fps) * target_fps
+
+# 2. 定义核心步长 (Stride)
+stride = clip_frames - context_frames
+
+# 3. 总片段数 total_clips
+total_clips = (
+    math.floor((target_frame_count - context_frames) / stride) + 1 - init_index
+)
+
+# 4. 最后片段帧数 last_clip_frames
+remainder = (target_frame_count - clip_frames) % stride
+last_clip_frames = (remainder // 17) * 17 + context_frames
+
+```
+
+要求：
+* 该节点是输出节点（is_output_node=True）：即使没有连接任何下游节点，Queue 也会执行它。
+* 节点运行后，把输出字段的内容在节点自带的只读文本框中显示，每个字段一行。（前端附加的多行文本框，未运行时显示占位提示）。
+
 ## 对你可能有帮助的参考资料
 
 ### ComfyUI 源码

@@ -6,7 +6,7 @@ Custom ComfyUI nodes for Lesca.
 
 Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 **Video Info (Lesca)**, **Video to Images (Lesca)**, **Video Combine
-(Lesca)** and **Video Add Noise (Lesca)**.
+(Lesca)**, **Video Add Noise (Lesca)** and **Context Clips (Lesca)**.
 
 ## Node Overview
 
@@ -18,6 +18,7 @@ Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 | [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); audio span sliced to match the exported frames |
 | [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in a directory into one file | Triggered by any upstream output; stream-copy merge with a re-encode fallback; previous merge outputs self-excluded from the scan; execution cache keyed by the source-file fingerprint |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | Cuts a head/tail block of frames and adds independent per-frame noise | Per-layer strength schedule (`frame_num_list` / `strenth_list`); optional seed for reproducible per-frame noise; short-video clamp |
+| [Context Clips (Lesca)](#context-clips-lesca) | Plans the clip schedule for a target video as pure metadata arithmetic | `target_frame_count` / `total_clips` / `last_clip_frames` from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
 
 ## Load Video (Lesca)
 
@@ -313,6 +314,46 @@ The node is a transform (non-output) node: it only emits the noise-added
   takes every available frame (`take = min(total, N)`) and the extra frames are
   absorbed by the earlier layers.
 
+## Context Clips (Lesca)
+
+Plans the clip schedule for a target video as pure arithmetic on the video's
+container metadata (`frame_count` and `fps`, read the same way Video Info
+(Lesca) does — no frame decoding). The `video` input accepts the output of
+**Load Video (Lesca)** or any other video node. It is an **output node**
+(`is_output_node=True`), so the graph executes it even when nothing is wired to
+its outputs.
+
+### Inputs
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `video` | `Video` | The video to plan clips for. |
+| `target_fps` | `Int` | Default `0` = keep the source frame rate; otherwise re-sample the video to this rate. |
+| `clip_frames` | `Int` | Default `124`. Frames per clip; must be greater than `context_frames` (the stride). |
+| `context_frames` | `Int` | Default `22`. Context frames kept between clips; the stride is `clip_frames - context_frames`. |
+| `init_index` | `Int` | Default `0`. Clips already consumed before this node runs; subtracted from the total. |
+
+### Outputs
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `target_frame_count` | `Int` | Total frames of the video at the target rate: `(frame_count / fps) * target_fps`, or `frame_count` when `target_fps` is `0`. |
+| `total_clips` | `Int` | `floor((target_frame_count - context_frames) / stride) + 1 - init_index`. |
+| `last_clip_frames` | `Int` | `(remainder // 17) * 17 + context_frames`, where `remainder = (target_frame_count - clip_frames) % stride`. |
+
+### Behavior
+
+* The three values follow the reference formulas from `specs.md` (goal 7)
+  verbatim, including Python's float `%` and `//` semantics.
+* `target_fps = 0` means "keep the source rate" (the raw formula would yield
+  `0` frames); the source `fps` is substituted, so `target_frame_count` equals
+  `frame_count`.
+* The math is kept in float internally and the reported integers use
+  `int(round(...))` of the float results.
+* After a run the node shows the three fields, one per line, in a read-only
+  text box on the node (a frontend-appended widget; a placeholder is shown
+  before the first run).
+
 ## Installation
 
 Drop this folder into ComfyUI's custom-node directory:
@@ -328,7 +369,7 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
 ## Files
 
 * `__init__.py` — package entry point; exposes `comfy_entrypoint` (a combined
-  extension registering all six nodes and Load Video's preview route) and
+  extension registering all seven nodes and Load Video's preview route) and
   `WEB_DIRECTORY = "web"`.
 * `lesca_load_video.py` — Load Video node, path-resolution logic, the
   `/lesca/load_video/preview` streaming endpoint, and the missing-file white
@@ -346,8 +387,12 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
 * `lesca_video_add_noise.py` — Video Add Noise node (head/tail frame cut via
   the lazy `as_trimmed` window, independent per-frame noise with a per-layer
   strength schedule, optional seed, short-video clamp).
+* `lesca_context_clips.py` — Context Clips node (target frame count / total
+  clips / last clip size computed from container metadata; `target_fps = 0`
+  keeps the source rate; output node with a read-only text box).
 * `web/extension.js` — custom frontend: Load Video's **Update** button + live
-  preview.
+  preview, and read-only text boxes for the Video Info and Context Clips
+  nodes.
 * `pyproject.toml` — node metadata for the ComfyUI custom-node manager
   (`[tool.comfyui] web = "web"` serves the frontend).
-* `specs.md` — the original requirement spec (goals 1–6, Chinese).
+* `specs.md` — the original requirement spec (goals 1–7, Chinese).
