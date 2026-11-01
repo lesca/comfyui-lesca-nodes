@@ -18,7 +18,7 @@ Lesca 的自定义 ComfyUI 节点。
 | [Video to Images (Lesca)](#video-to-images-lesca) | 把视频解码成一批图片帧 | force-rate → trim → frame-cap → resize 管线；窗口化解码（不全量解码）；音频区间随导出帧同步裁剪 |
 | [Video Combine (Lesca)](#video-combine-lesca) | 把目录中所有同前缀的视频文件合并成一个 | 任意上游输出触发；始终经 concat filter 重编码、接缝干净；自动排除已合并产物；按源文件指纹做执行缓存 |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | 截取头部/尾部一段帧，添加互相独立的逐帧噪声 | 分层强度调度（`frame_num_list` / `strenth_list`）；可选 seed 复现逐帧噪声；短视频钳制 |
-| [Context Clips (Lesca)](#context-clips-lesca) | 以纯元数据算术为目标视频规划片段调度 | 由 `frame_count` + `fps` 算出 `target_frame_count` / `total_clips` / `last_clip_frames`；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
+| [Context Clips (Lesca)](#context-clips-lesca) | 适用于 MiniMax H3 动作迁移类跑火车长视频生成：固定步长 `clip_frames` 切片、`context_frames` 重叠（消除 "Add Guide" / "Motion Context" 重叠帧影响） | 由 `frame_count` + `fps` 算出 `target_frame_count` / `total_clips` / `last_clip_frames`；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
 
 ## Load Video (Lesca)
 
@@ -279,38 +279,39 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 
 ## Context Clips (Lesca)
 
-以纯元数据算术为目标视频规划片段调度：只读取视频的 `frame_count` 和 `fps`
-（与 Video Info (Lesca) 相同的访问器，不解码任何帧）。`video` 输入接受
-**Load Video (Lesca)** 或任何其它视频节点的输出。该节点是**输出节点**
+适用于 MiniMax H3 动作迁移类跑火车长视频生成。节点以固定步长的 `clip_frames`
+（默认 124）对视频总帧数 `frame_count` 切片（指定 `target_fps` 时以转换后的
+总帧数切片），相邻切片之间以 `context_frames`（默认 22）重叠——重叠用于消除
+使用 "Add Guide" / "Motion Context" 节点时产生的重叠帧影响。节点最终算出跑
+火车所需的总片段数 `total_clips`，以及最后一个片段所需的帧数（对齐 17n+5，
+即 17 的倍数加上上下文帧）。全部计算是纯元数据算术：只读取 `frame_count`
+和 `fps`（与 Video Info (Lesca) 相同的访问器，不解码任何帧）。`video` 输入
+接受 **Load Video (Lesca)** 或任何其它视频节点的输出。该节点是**输出节点**
 （`is_output_node=True`）：即使没有连接任何下游节点，Queue 也会执行它。
 
 ### 输入
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `video` | `Video` | 要规划片段的视频。 |
-| `target_fps` | `Int` | 默认 `0` = 保持源帧率；否则把视频重采样到该帧率。 |
-| `clip_frames` | `Int` | 默认 `124`。每个片段的帧数；必须大于 `context_frames`（步长）。 |
-| `context_frames` | `Int` | 默认 `22`。片段之间保留的上下文帧数；步长 = `clip_frames - context_frames`。 |
-| `init_index` | `Int` | 默认 `0`。本节点运行前已消耗的片段数；从总数中减去。 |
+| `video` | `Video` | 要切片的视频；节点读取其 `frame_count` 和 `fps`（与 Video Info (Lesca) 相同的访问器，不解码）。 |
+| `target_fps` | `Int` | 默认 `0` = 保持源帧率（按 `frame_count` 切片）；否则按转换到该帧率后的总帧数切片。 |
+| `clip_frames` | `Int` | 默认 `124`。固定步长的切片窗口（每个片段的帧数）；必须大于 `context_frames`。 |
+| `context_frames` | `Int` | 默认 `22`。相邻切片之间保留的重叠帧数——用于消除 "Add Guide" / "Motion Context" 节点产生的重叠帧影响。 |
+| `init_index` | `Int` | 默认 `0`。本节点运行前已消耗的片段数；从总片段数中减去。 |
 
 ### 输出
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `target_frame_count` | `Int` | 目标视频的总帧数：`(frame_count / fps) * target_fps`；`target_fps` 为 `0` 时等于 `frame_count`。 |
-| `total_clips` | `Int` | `ceil((target_frame_count - clip_frames) / stride) + 1 - init_index`；末段余量不足 0.33 s 被丢弃时再减 1。 |
-| `last_clip_frames` | `Int` | `remainder == 0` 或 `remainder < 8`（末段不足 0.33 s，被丢弃）时为 `0`；否则为 `ceil(remainder / 17) * 17 + context_frames`，其中 `remainder = (target_frame_count - clip_frames) % stride`。 |
+| `target_frame_count` | `Int` | 跑火车切片的总帧数：`frame_count`，或按 `target_fps` 转换后的总帧数。 |
+| `total_clips` | `Int` | 跑火车生成所需的总片段数（已减去 `init_index`）。 |
+| `last_clip_frames` | `Int` | 最后一个片段所需的帧数：尾部帧数对齐 17n+5（17 的倍数加上上下文帧，默认 `context_frames = 22` 时即 17n+5）；无末段时为 `0`。 |
 
 ### 行为
 
-* 三个数值照搬 `specs.md`（目标 7）的参考公式，包括 Python float 的 `%` 语义。
-  `remainder == 0` 表示目标恰好被覆盖完（末段为空）；余量不超过 8 帧表示末段
-  不足 0.33 s，会被丢弃（`last_clip_frames = 0` 且片段总数减一）；其余情况
-  末段帧数向上取整到 `17` 的倍数，再加上上下文帧。
-* `target_fps = 0` 表示"保持源帧率"（原式直接代入 0 会得到 0 帧）：改用源
-  `fps` 代入，于是 `target_frame_count` 等于 `frame_count`。
-* 内部按 float 计算，报告的整数值取 float 结果的 `int(round(...))`。
+* 三个数值照搬 `specs.md`（目标 7）的参考公式——具体算法以 `specs.md` 中的
+  代码块为准。`target_fps = 0` 表示"保持源帧率"（原式直接代入 0 会得到 0 帧）：
+  改用源 `fps` 代入，于是 `target_frame_count` 等于 `frame_count`。
 * 运行后，节点把三个字段逐行显示在节点自带的只读文本框中（前端附加的多行
   文本框，未运行时显示占位提示）。
 

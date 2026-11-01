@@ -28,10 +28,10 @@ Seven nodes are registered:
   per-layer strength schedule (frame_num_list / strenth_list); an optional seed
   makes the per-frame noise reproducible (seed 0 is fully random).
 * ``ContextClipsLesca`` — Context Clips (Lesca), plans the clip schedule for a
-  target video: reports the target frame count, total clip count, last-clip
-  frame count and the current clip's frame count as pure arithmetic on the
-  video's container metadata (no decoding); an output node that also shows the
-  four fields in a read-only text box.
+  target video: reports the target frame count, total clip count and last-clip
+  frame count as pure arithmetic on the video's container metadata (no
+  decoding); an output node that also shows the three fields in a read-only
+  text box.
 
 The Load Video module owns its node, its preview route, and its extension; the
 combined extension below delegates to it so the package exposes one entry point.

@@ -18,7 +18,7 @@ Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 | [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); audio span sliced to match the exported frames |
 | [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in a directory into one file | Triggered by any upstream output; always re-encodes through the concat filter for a clean audio seam; previous merge outputs self-excluded from the scan; execution cache keyed by the source-file fingerprint |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | Cuts a head/tail block of frames and adds independent per-frame noise | Per-layer strength schedule (`frame_num_list` / `strenth_list`); optional seed for reproducible per-frame noise; short-video clamp |
-| [Context Clips (Lesca)](#context-clips-lesca) | Plans the clip schedule for a target video as pure metadata arithmetic | `target_frame_count` / `total_clips` / `last_clip_frames` from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
+| [Context Clips (Lesca)](#context-clips-lesca) | For MiniMax H3 action-migration "run-the-train" long-video generation: slice `frame_count` with a fixed-stride `clip_frames`, overlapping slices by `context_frames` to cancel the "Add Guide" / "Motion Context" overlap-frame effect | `target_frame_count` / `total_clips` / `last_clip_frames` from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
 
 ## Load Video (Lesca)
 
@@ -322,7 +322,14 @@ The node is a transform (non-output) node: it only emits the noise-added
 
 ## Context Clips (Lesca)
 
-Plans the clip schedule for a target video as pure arithmetic on the video's
+For MiniMax H3 action-migration "run-the-train" long-video generation. The
+node slices the video's total frame count (`frame_count`, or the frame count
+after `target_fps` conversion) with a fixed-stride `clip_frames` (default
+124) slicing window, and adjacent slices overlap by `context_frames` (default
+22) — the overlap cancels the overlap-frame effect produced by the "Add
+Guide" / "Motion Context" nodes. It then reports the total number of clips
+`total_clips` the run needs and the frame count the final clip must carry
+(aligned to the 17n+5 pattern). All of it is pure arithmetic on the video's
 container metadata (`frame_count` and `fps`, read the same way Video Info
 (Lesca) does — no frame decoding). The `video` input accepts the output of
 **Load Video (Lesca)** or any other video node. It is an **output node**
@@ -333,33 +340,27 @@ its outputs.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `video` | `Video` | The video to plan clips for. |
-| `target_fps` | `Int` | Default `0` = keep the source frame rate; otherwise re-sample the video to this rate. |
-| `clip_frames` | `Int` | Default `124`. Frames per clip; must be greater than `context_frames` (the stride). |
-| `context_frames` | `Int` | Default `22`. Context frames kept between clips; the stride is `clip_frames - context_frames`. |
-| `init_index` | `Int` | Default `0`. Clips already consumed before this node runs; subtracted from the total. |
+| `video` | `Video` | The video to slice; the node reads its `frame_count` and `fps` (the same accessors as Video Info (Lesca), no decoding). |
+| `target_fps` | `Int` | Default `0` = keep the source frame rate (slice by `frame_count`); otherwise slicing uses the frame count converted to this rate. |
+| `clip_frames` | `Int` | Default `124`. The fixed-stride slicing window (frames per clip); must be greater than `context_frames`. |
+| `context_frames` | `Int` | Default `22`. The overlap kept between adjacent slices — it cancels the overlap-frame effect of the "Add Guide" / "Motion Context" nodes. |
+| `init_index` | `Int` | Default `0`. Clips already consumed before this node runs; subtracted from the total clip count. |
 
 ### Outputs
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `target_frame_count` | `Int` | Total frames of the video at the target rate: `(frame_count / fps) * target_fps`, or `frame_count` when `target_fps` is `0`. |
-| `total_clips` | `Int` | `ceil((target_frame_count - clip_frames) / stride) + 1 - init_index`, decremented by one when the final remainder (below 0.33 s) is dropped. |
-| `last_clip_frames` | `Int` | `0` when `remainder == 0` or `remainder < 8` (a final clip shorter than 0.33 s is dropped); otherwise `ceil(remainder / 17) * 17 + context_frames`, where `remainder = (target_frame_count - clip_frames) % stride`. |
+| `target_frame_count` | `Int` | The total frame count the run slices — `frame_count`, or the frame count after `target_fps` conversion. |
+| `total_clips` | `Int` | The total number of clips the run-the-train generation needs (already reduced by `init_index`). |
+| `last_clip_frames` | `Int` | The frame count the final clip must carry: the tail aligned to the 17n+5 pattern (a multiple of 17 plus `context_frames`, which is 22 by default); `0` when there is no final clip. |
 
 ### Behavior
 
 * The three values follow the reference formulas from `specs.md` (goal 7)
-  verbatim, including Python's float `%` semantics. A remainder of `0` means
-  the target is exactly covered (empty last clip); a remainder of `8` frames
-  or less means the final clip is shorter than 0.33 s and is dropped
-  (`last_clip_frames = 0` and one fewer clip); otherwise the last clip is
-  rounded up to a multiple of `17` plus the context frames.
-* `target_fps = 0` means "keep the source rate" (the raw formula would yield
+  verbatim — the code block in `specs.md` is the source of truth for the math.
+  `target_fps = 0` means "keep the source rate" (the raw formula would yield
   `0` frames); the source `fps` is substituted, so `target_frame_count` equals
   `frame_count`.
-* The math is kept in float internally and the reported integers use
-  `int(round(...))` of the float results.
 * After a run the node shows the three fields, one per line, in a read-only
   text box on the node (a frontend-appended widget; a placeholder is shown
   before the first run).
