@@ -344,13 +344,17 @@ its outputs.
 | Field | Type | Meaning |
 |-------|------|---------|
 | `target_frame_count` | `Int` | Total frames of the video at the target rate: `(frame_count / fps) * target_fps`, or `frame_count` when `target_fps` is `0`. |
-| `total_clips` | `Int` | `floor((target_frame_count - context_frames) / stride) + 1 - init_index`. |
-| `last_clip_frames` | `Int` | `(remainder // 17) * 17 + context_frames`, where `remainder = (target_frame_count - clip_frames) % stride`. |
+| `total_clips` | `Int` | `ceil((target_frame_count - clip_frames) / stride) + 1 - init_index`, decremented by one when the final remainder (below 0.33 s) is dropped. |
+| `last_clip_frames` | `Int` | `0` when `remainder == 0` or `remainder < 8` (a final clip shorter than 0.33 s is dropped); otherwise `ceil(remainder / 17) * 17 + context_frames`, where `remainder = (target_frame_count - clip_frames) % stride`. |
 
 ### Behavior
 
 * The three values follow the reference formulas from `specs.md` (goal 7)
-  verbatim, including Python's float `%` and `//` semantics.
+  verbatim, including Python's float `%` semantics. A remainder of `0` means
+  the target is exactly covered (empty last clip); a remainder of `8` frames
+  or less means the final clip is shorter than 0.33 s and is dropped
+  (`last_clip_frames = 0` and one fewer clip); otherwise the last clip is
+  rounded up to a multiple of `17` plus the context frames.
 * `target_fps = 0` means "keep the source rate" (the raw formula would yield
   `0` frames); the source `fps` is substituted, so `target_frame_count` equals
   `frame_count`.

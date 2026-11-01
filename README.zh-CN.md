@@ -299,13 +299,15 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `target_frame_count` | `Int` | 目标视频的总帧数：`(frame_count / fps) * target_fps`；`target_fps` 为 `0` 时等于 `frame_count`。 |
-| `total_clips` | `Int` | `floor((target_frame_count - context_frames) / stride) + 1 - init_index`。 |
-| `last_clip_frames` | `Int` | `(remainder // 17) * 17 + context_frames`，其中 `remainder = (target_frame_count - clip_frames) % stride`。 |
+| `total_clips` | `Int` | `ceil((target_frame_count - clip_frames) / stride) + 1 - init_index`；末段余量不足 0.33 s 被丢弃时再减 1。 |
+| `last_clip_frames` | `Int` | `remainder == 0` 或 `remainder < 8`（末段不足 0.33 s，被丢弃）时为 `0`；否则为 `ceil(remainder / 17) * 17 + context_frames`，其中 `remainder = (target_frame_count - clip_frames) % stride`。 |
 
 ### 行为
 
-* 三个数值照搬 `specs.md`（目标 7）的参考公式，包括 Python float 的 `%` 与
-  `//` 语义。
+* 三个数值照搬 `specs.md`（目标 7）的参考公式，包括 Python float 的 `%` 语义。
+  `remainder == 0` 表示目标恰好被覆盖完（末段为空）；余量不超过 8 帧表示末段
+  不足 0.33 s，会被丢弃（`last_clip_frames = 0` 且片段总数减一）；其余情况
+  末段帧数向上取整到 `17` 的倍数，再加上上下文帧。
 * `target_fps = 0` 表示"保持源帧率"（原式直接代入 0 会得到 0 帧）：改用源
   `fps` 代入，于是 `target_frame_count` 等于 `frame_count`。
 * 内部按 float 计算，报告的整数值取 float 结果的 `int(round(...))`。

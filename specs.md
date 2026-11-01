@@ -133,6 +133,7 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
 ```python
 import math
 
+
 # 1. 计算目标总帧数（避免重复计算）
 target_frame_count = (frame_count / fps) * target_fps
 
@@ -141,12 +142,18 @@ stride = clip_frames - context_frames
 
 # 3. 总片段数 total_clips
 total_clips = (
-    math.floor((target_frame_count - context_frames) / stride) + 1 - init_index
+    math.ceil((target_frame_count - clip_frames) / stride) + 1 - init_index
 )
 
 # 4. 最后片段帧数 last_clip_frames
 remainder = (target_frame_count - clip_frames) % stride
-last_clip_frames = (remainder // 17) * 17 + context_frames
+if remainder == 0:
+    last_clip_frames = 0
+elif remainder < 8: # if last clip < 0.33s
+    last_clip_frames = 0
+    total_clips -= 1
+else: # if last clip > 0.33s
+    last_clip_frames = math.ceil(remainder / 17) * 17 + context_frames
 
 ```
 

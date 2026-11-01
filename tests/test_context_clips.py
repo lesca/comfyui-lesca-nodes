@@ -8,8 +8,10 @@ specs.md:
 
 * target_fps = 0   -> "keep unchanged": target_frame_count == frame_count
 * target_fps > 0   -> target_frame_count == (frame_count / fps) * target_fps
-* total_clips      -> floor((target - context) / stride) + 1 - init_index
-* last_clip_frames -> (remainder // 17) * 17 + context, Python float % and //
+* total_clips      -> ceil((target - clip_frames) / stride) + 1 - init_index
+                      (minus one when the remainder branch drops the last clip)
+* last_clip_frames -> 0 when remainder == 0 or 0 < remainder < 8; otherwise
+                      ceil(remainder / 17) * 17 + context (Python float %)
 * ui dict          -> the three fields joined one-per-line
 * schema           -> is_output_node is True
 * validate_inputs  -> linked (None) inputs accepted; clip_frames <=
@@ -68,9 +70,15 @@ def reference(frame_count, fps, target_fps, clip_frames, context_frames,
     eff = target_fps if target_fps > 0 else fps
     target_frame_count = (frame_count / fps) * eff
     stride = clip_frames - context_frames
-    total_clips = math.floor((target_frame_count - context_frames) / stride) + 1 - init_index
+    total_clips = math.ceil((target_frame_count - clip_frames) / stride) + 1 - init_index
     remainder = (target_frame_count - clip_frames) % stride
-    last_clip_frames = (remainder // 17) * 17 + context_frames
+    if remainder == 0:
+        last_clip_frames = 0
+    elif remainder < 8:
+        last_clip_frames = 0
+        total_clips -= 1
+    else:
+        last_clip_frames = math.ceil(remainder / 17) * 17 + context_frames
     return (int(round(target_frame_count)), int(round(total_clips)),
             int(round(last_clip_frames)))
 
@@ -94,14 +102,14 @@ v240 = make_video(240, 24)
 out = expect(v240, 240, 24, "240 frames @ 24 fps -> target 240, 3 clips")
 check("target_frame_count is 240", out[0] == 240, f"got {out[0]}")
 check("total_clips is 3", out[1] == 3, f"got {out[1]}")
-check("last_clip_frames is 22", out[2] == 22, f"got {out[2]}")
+check("last_clip_frames is 39", out[2] == 39, f"got {out[2]}")
 
 # ---------------------------------------------------------------------------
 # target_fps > 0 -> resample the frame count
 # ---------------------------------------------------------------------------
 print("== target_fps = 12 resamples 240 frames @ 24 fps to 120")
-out = expect(v240, 240, 24, "target 120 -> 1 clip, last clip 107", target_fps=12)
-check("last_clip_frames is 107", out[2] == 107, f"got {out[2]}")
+out = expect(v240, 240, 24, "target 120 -> 1 clip, last clip 124", target_fps=12)
+check("last_clip_frames is 124", out[2] == 124, f"got {out[2]}")
 check("total_clips is 1", out[1] == 1, f"got {out[1]}")
 
 # ---------------------------------------------------------------------------
@@ -112,12 +120,32 @@ out = expect(v240, 240, 24, "init_index 2 -> 1 clip", init_index=2)
 check("total_clips is 1", out[1] == 1, f"got {out[1]}")
 
 # ---------------------------------------------------------------------------
-# Python float % and // semantics on a short target (remainder goes positive)
+# Python float % semantics on a short target (remainder stays non-negative,
+# ceil-based last clip: ceil(28 / 17) * 17 + 22 == 56)
 # ---------------------------------------------------------------------------
 print("== short target: float % stays non-negative")
 v50 = make_video(50, 10)
-out = expect(v50, 50, 10, "50 frames @ 10 fps -> 1 clip, last clip 39")
-check("last_clip_frames is 39", out[2] == 39, f"got {out[2]}")
+out = expect(v50, 50, 10, "50 frames @ 10 fps -> 1 clip, last clip 56")
+check("last_clip_frames is 56", out[2] == 56, f"got {out[2]}")
+
+# ---------------------------------------------------------------------------
+# remainder == 0 -> the target is exactly covered, last clip is empty
+# ---------------------------------------------------------------------------
+print("== remainder == 0 -> last clip 0, no clip dropped")
+v226 = make_video(226, 24)
+out = expect(v226, 226, 24, "226 frames @ 24 fps -> 2 clips, last clip 0")
+check("total_clips is 2", out[1] == 2, f"got {out[1]}")
+check("last_clip_frames is 0", out[2] == 0, f"got {out[2]}")
+
+# ---------------------------------------------------------------------------
+# 0 < remainder < 8 -> final clip shorter than 0.33 s is dropped:
+# last clip 0 AND total_clips is decremented by one
+# ---------------------------------------------------------------------------
+print("== 0 < remainder < 8 -> last clip 0, total clipped")
+v231 = make_video(231, 24)
+out = expect(v231, 231, 24, "231 frames @ 24 fps -> 2 clips, last clip 0")
+check("total_clips is 2", out[1] == 2, f"got {out[1]}")
+check("last_clip_frames is 0", out[2] == 0, f"got {out[2]}")
 
 # ---------------------------------------------------------------------------
 # the ui dict carries the three fields one-per-line
@@ -129,7 +157,7 @@ lines = info.split("\n")
 check("three lines", len(lines) == 3, f"got {len(lines)}: {info!r}")
 check("line 1 is target_frame_count", lines[0] == "target_frame_count: 240", f"got {lines[0]!r}")
 check("line 2 is total_clips", lines[1] == "total_clips: 3", f"got {lines[1]!r}")
-check("line 3 is last_clip_frames", lines[2] == "last_clip_frames: 22", f"got {lines[2]!r}")
+check("line 3 is last_clip_frames", lines[2] == "last_clip_frames: 39", f"got {lines[2]!r}")
 
 # ---------------------------------------------------------------------------
 # schema is an output node

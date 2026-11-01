@@ -9,10 +9,14 @@ clip-based generation pipeline should cover the target length:
   means "keep the source rate", so the count equals ``frame_count``.
 * ``total_clips`` — number of clips needed with a stride of
   ``clip_frames - context_frames``:
-  ``floor((target_frame_count - context_frames) / stride) + 1 - init_index``.
-* ``last_clip_frames`` — frame count of the final clip:
-  ``(remainder // 17) * 17 + context_frames`` where
-  ``remainder = (target_frame_count - clip_frames) % stride``.
+  ``ceil((target_frame_count - clip_frames) / stride) + 1 - init_index``
+  (decremented by one when the remainder branch below drops the last clip).
+* ``last_clip_frames`` — frame count of the final clip, from
+  ``remainder = (target_frame_count - clip_frames) % stride``:
+  ``0`` when the remainder is ``0`` (the target is exactly covered) or when
+  ``0 < remainder < 8`` (a final clip shorter than 0.33 s is dropped and
+  ``total_clips`` is decremented); otherwise
+  ``ceil(remainder / 17) * 17 + context_frames``.
 
 All three values are pure arithmetic on the video's container metadata
 (``get_frame_count`` / ``get_frame_rate``, the same accessors Video Info
@@ -27,7 +31,7 @@ listens for it and fills a read-only text box on the node with the three
 fields, one per line.
 
 The math follows the reference formulas from specs.md (goal 7) verbatim,
-including Python's float ``%`` and ``//`` semantics (e.g. ``(-4) % 102 == 98``).
+including Python's float ``%`` semantics (e.g. ``(-4) % 102 == 98``).
 The only adaptations: ``target_fps = 0`` is interpreted as "use the source
 fps" (the raw formula would yield 0 frames), and the reported integers use
 ``int(round(...))`` of the float results (rate conversions normally yield
@@ -99,11 +103,11 @@ class ContextClipsLesca(io.ComfyNode):
                 ),
                 io.Int.Output(
                     display_name="total_clips",
-                    tooltip="Total number of clips: floor((target frames - context frames) / stride) + 1 - init index.",
+                    tooltip="Total number of clips: ceil((target frames - clip frames) / stride) + 1 - init index; decremented when the final remainder is dropped (less than 0.33 s).",
                 ),
                 io.Int.Output(
                     display_name="last_clip_frames",
-                    tooltip="Frame count of the final clip: (remainder // 17) * 17 + context frames.",
+                    tooltip="Frame count of the final clip: 0 when the remainder is 0 or below 0.33 s; otherwise ceil(remainder / 17) * 17 + context frames, where remainder = (target frames - clip frames) % stride.",
                 ),
             ],
         )
@@ -144,12 +148,18 @@ class ContextClipsLesca(io.ComfyNode):
         # give 0 frames); substituting the source fps yields frame_count.
         effective_fps = float(target_fps) if int(target_fps or 0) > 0 else fps
         # Keep the float for the downstream math (the reference formulas use
-        # float % and //); only the reported values are rounded to int.
+        # float %); only the reported values are rounded to int.
         target_frame_count = (frame_count / fps) * effective_fps
         stride = int(clip_frames) - int(context_frames)
-        total_clips = math.floor((target_frame_count - context_frames) / stride) + 1 - init_index
+        total_clips = math.ceil((target_frame_count - clip_frames) / stride) + 1 - init_index
         remainder = (target_frame_count - clip_frames) % stride
-        last_clip_frames = (remainder // 17) * 17 + context_frames
+        if remainder == 0:
+            last_clip_frames = 0
+        elif remainder < 8:  # if last clip < 0.33s
+            last_clip_frames = 0
+            total_clips -= 1
+        else:  # if last clip > 0.33s
+            last_clip_frames = math.ceil(remainder / 17) * 17 + context_frames
 
         target_frame_count = int(round(target_frame_count))
         total_clips = int(round(total_clips))
