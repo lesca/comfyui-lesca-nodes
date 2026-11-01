@@ -16,7 +16,7 @@ Lesca 的自定义 ComfyUI 节点。
 | [Save Video (Lesca)](#save-video-lesca) | 把内置 `Create Video` + `Save Video` 合并为一个节点 | 用户指定保存路径（无 `_000001_` 计数器后缀）；帧 + 音频裁剪；裁剪后的 `images` / `audio` 透传为输出 |
 | [Video Info (Lesca)](#video-info-lesca) | 以独立输出报告视频各项属性，供工作流分支使用 | `fps` / `bit_depth` / `color_space` / `width` / `height` / `frame_count`，外加逐行输出的 `video_info` 字符串；输出节点，可单独运行 |
 | [Video to Images (Lesca)](#video-to-images-lesca) | 把视频解码成一批图片帧 | force-rate → trim → frame-cap → resize 管线；窗口化解码（不全量解码）；音频区间随导出帧同步裁剪 |
-| [Video Combine (Lesca)](#video-combine-lesca) | 把目录中所有同前缀的视频文件合并成一个 | 任意上游输出触发；流拷贝合并、不兼容时重编码兜底；自动排除已合并产物；按源文件指纹做执行缓存 |
+| [Video Combine (Lesca)](#video-combine-lesca) | 把目录中所有同前缀的视频文件合并成一个 | 任意上游输出触发；始终经 concat filter 重编码、接缝干净；自动排除已合并产物；按源文件指纹做执行缓存 |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | 截取头部/尾部一段帧，添加互相独立的逐帧噪声 | 分层强度调度（`frame_num_list` / `strenth_list`）；可选 seed 复现逐帧噪声；短视频钳制 |
 | [Context Clips (Lesca)](#context-clips-lesca) | 以纯元数据算术为目标视频规划片段调度 | 由 `frame_count` + `fps` 算出 `target_frame_count` / `total_clips` / `last_clip_frames`；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
 
@@ -222,11 +222,15 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
   `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4`，保存在同一目录。
 * 之前生成的 `<prefix>_merged-…mp4` 会被**排除在扫描之外**，因此对同一目录再次
   运行节点时合并的是原始片段，绝不会合并已经合并过的文件。
-* 合并策略：ffmpeg-python 的 concat demuxer 加 `-c copy`，直接拼接数据流、不
-  解码（无损且快，适用于同一管线产出的片段）。当流拷贝因输入不兼容（编码、
-  分辨率、帧率不一致）而失败时，节点自动回退到 concat filter 重编码为一个
-  H.264 流（丢弃音频）。两条命令行均由 ffmpeg-python 包构建——它仍要求系统
-  PATH 上有 ffmpeg 二进制。
+* 合并策略：每次合并都经 **concat filter 重编码**成一个全新的 H.264 + AAC
+  文件——流拷贝路径已弃用，因为 concat demuxer 的 `-c copy` 在某个片段的音频
+  时长不是 AAC 整帧的整数倍时，会在每个拼接处重复最后一个 AAC 帧，表现为接缝
+  处可闻的掉帧与重复。重编码会把每个输入的视频归一化到首个源的分辨率与帧率、
+  音频归一化到首个带音频源的采样率与声道，因此也能处理不兼容输入（编码、
+  分辨率、帧率不一致）。无音频轨的源会补一段等长的静音流；每个片段的音频先
+  裁到它自己的视频时长，使多余的 AAC 补齐不额外增帧、接缝保持干净。命令行直接
+  构建并用 `subprocess` 运行——要求系统 PATH 上同时有 `ffmpeg` **和**
+  `ffprobe` 二进制（提前检查）。
 * 该节点是输出节点：即使没有任何下游节点连接 `filename` 输出，Queue 也会执行
   它。
 * 执行缓存以匹配片段的 `(basename, mtime)` 集合指纹为键：新增或修改片段会产出
@@ -332,8 +336,8 @@ ComfyUI/custom_nodes/comfyui-lesca-nodes/
 * `lesca_video_to_images.py` — Video to Images 节点（窗口化解码，
   force-rate → trim → frame-cap → resize 管线，音频区间切片）。
 * `lesca_video_combine.py` — Video Combine 节点（前缀扫描、文件名升序、
-  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` 产物自排除、ffmpeg-python 流拷贝
-  合并与重编码兜底、源文件集合执行缓存指纹）。
+  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` 产物自排除、始终经 concat filter
+  重编码以获得干净音频接缝、源文件集合执行缓存指纹）。
 * `lesca_video_add_noise.py` — Video Add Noise 节点（head/tail 截帧走懒式
   `as_trimmed` 窗口、独立的逐帧噪声与分层强度调度、可选 seed、短视频钳制）。
 * `lesca_context_clips.py` — Context Clips 节点（由容器元数据算出目标总帧数 /

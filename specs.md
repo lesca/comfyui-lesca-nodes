@@ -94,6 +94,8 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
   * 例如，prefix 为 `dance`，如果目录中有 `dance_clip0.mp4` `dance_clip1.mp4` `dance_clip2.mp4` 则会将这三个文件按 0 1 2 的顺序合并成一个 `prefix_merged-yyyy_mm_dd_hh_mm_ss.mp4` 这样形式的文件，保存在相同目录中。
 * 再次对该目录运行该节点时会忽略 `prefix_merged-yyyy_mm_dd_hh_mm_ss.mp4` 这类文件以免重复合并。
 * 输入可以接受上游节点的输出作为参数。
+* 合并必须产生**干净的音频接缝**：不得在拼接处重复最后一个 AAC 帧（concat demuxer 的 `-c copy` 会在片段音频时长非 AAC 整帧整数倍时重复末帧，造成可闻的掉帧与重复）。因此一律经 concat filter 重编码合并，而不是流拷贝。
+* 合并需对不兼容输入（编码、分辨率、帧率不一致）归一化后重编码：视频归一到首个源的分辨率/帧率，音频归一到首个带音频源的采样率/声道；无音频轨的源补等长静音；每个片段的音频先裁到其自身视频时长，避免多余 AAC 补齐额外增帧。
 
 ## 目标 6: Video Add Noise (Lesca) 节点
 将上游节点传入的视频截取指定的帧数，并为这些帧添加噪点。

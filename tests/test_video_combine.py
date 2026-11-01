@@ -7,12 +7,18 @@ solid-color frames) and asserts the spec's behavior:
                    order; previously merged <prefix>_merged-*.mp4 outputs,
                    non-video files and other prefixes are ignored
 * merge         -> <prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4 in the same
-                   directory; total frame count equals the sum of the inputs
+                   directory; total frame count equals the sum of the inputs;
+                    the audio splice is clean (no last-AAC-frame duplication: the
+                    merged decoded sample count is never longer than the inputs'
+                    sum, and each clip's audio is trimmed to its video duration so the
+                    excess AAC padding adds no extra frame)
 * re-run        -> the freshly merged file is excluded from the next scan,
                    so a second run produces another same-length merged file
                    instead of merging the merge
-* fallback      -> incompatible inputs (different resolutions) fail the
-                   stream-copy path and are merged by the re-encode fallback
+* re-encode     -> every merge re-encodes (h264 + aac); incompatible inputs
+                   (different resolutions) and mixed-audio inputs (one clip
+                   without a track) are handled by normalising streams /
+                   padding silence, not by a copy-then-fallback path
 * single source -> a directory with one clip still merges (a renamed copy)
 * errors        -> missing folder / not a directory / empty prefix / no
                    matching files / relative path escaping the base directory
@@ -55,19 +61,23 @@ def check(label, cond, detail=""):
         print(f"  FAIL  {label}  {detail}")
 
 
-def make_clip(path, frames, color, size="128x96", fps=30):
-    """A ``frames``-long h264+aac clip whose frames are solid ``color``."""
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-v", "error",
-            "-f", "lavfi", "-i", f"color=c={color}:s={size}:r={fps}:d={frames / fps}",
+def make_clip(path, frames, color, size="128x96", fps=30, audio=True):
+    """A ``frames``-long h264 clip whose frames are solid ``color``.
+
+    With ``audio`` the clip also carries a 440 Hz sine aac track; without it
+    the clip is video-only.
+    """
+    command = [
+        "ffmpeg", "-y", "-v", "error",
+        "-f", "lavfi", "-i", f"color=c={color}:s={size}:r={fps}:d={frames / fps}",
+    ]
+    if audio:
+        command += [
             "-f", "lavfi", "-i", f"sine=frequency=440:duration={frames / fps}",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-shortest",
-            path,
-        ],
-        check=True, capture_output=True,
-    )
+        ]
+    command += ["-c:v", "libx264", "-pix_fmt", "yuv420p", path]
+    subprocess.run(command, check=True, capture_output=True)
 
 
 def frame_count(path):
@@ -79,6 +89,22 @@ def frame_count(path):
         capture_output=True, text=True, check=True,
     )
     return int(out.stdout.strip().splitlines()[0])
+
+
+def audio_samples(path):
+    """Total decoded PCM audio samples in ``path`` (0 when it has no audio).
+
+    Decodes to mono s16le so the sample count is simply half the byte count;
+    this is the quantity the clean-splice invariant is asserted on.
+    """
+    out = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1",
+            "-f", "s16le", "-acodec", "pcm_s16le", "-",
+        ],
+        capture_output=True, check=True,
+    )
+    return len(out.stdout) // 2
 
 
 def run(folder, prefix, any=None):
@@ -133,6 +159,20 @@ def main():
               subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
                               "-show_entries", "stream=codec_name", "-of", "csv=p=0", out],
                              capture_output=True, text=True).stdout.strip() != "")
+        # Seam cleanliness. The old stream-copy bug duplicated the last AAC
+        # frame at the splice, so the merged audio ran LONGER than the inputs'
+        # sum by a full 1024-sample frame. The re-encode instead trims each
+        # clip's audio to its own video duration (AAC pads audio up to whole
+        # frames, so that trim removes a little padding per clip), which makes
+        # the merged audio at most equal to -- usually slightly shorter than --
+        # the raw inputs' sum. So: never longer than the sum + one frame (no
+        # duplication), and never shorter than the sum minus one frame per
+        # source (not over-trimmed).
+        seam_expected = sum(audio_samples(s) for s in sources)
+        seam_got = audio_samples(out)
+        check("clean audio seam (no last-frame duplication)",
+              seam_expected - len(sources) * 1024 <= seam_got <= seam_expected + 1024,
+              f"{seam_got} vs {seam_expected} (diff {seam_got - seam_expected})")
 
         # --- re-run ---------------------------------------------------------
         print("re-run")
@@ -145,15 +185,43 @@ def main():
         check("second merge has the same frame count (no merge-of-merge)",
               frame_count(out2) == expected_total, f"{frame_count(out2)} != {expected_total}")
 
-        # --- incompatible streams -> re-encode fallback ----------------------
-        print("re-encode fallback")
+        # --- incompatible streams (different resolutions) --------------------
+        print("incompatible streams")
         mixeddir = tempfile.mkdtemp(prefix="lesca-combine-mixed-", dir=workdir)
         make_clip(os.path.join(mixeddir, "mix_a.mp4"), 8, "red", size="128x96")
         make_clip(os.path.join(mixeddir, "mix_b.mp4"), 6, "blue", size="320x240")
         out3 = run(mixeddir, "mix")
-        check("incompatible clips merged via fallback", os.path.isfile(out3), out3)
-        check("fallback output has the total frame count", frame_count(out3) == 14,
+        check("incompatible clips merged (re-encode normalises streams)", os.path.isfile(out3), out3)
+        check("incompatible merge has the total frame count", frame_count(out3) == 14,
               f"{frame_count(out3)} != 14")
+
+        # --- mixed audio: one clip has no track -------------------------------
+        print("mixed audio")
+        mixedaudir = tempfile.mkdtemp(prefix="lesca-combine-audio-", dir=workdir)
+        make_clip(os.path.join(mixedaudir, "aud_a.mp4"), 8, "red", audio=True)
+        make_clip(os.path.join(mixedaudir, "aud_b.mp4"), 6, "blue", audio=False)
+        out5 = run(mixedaudir, "aud")
+        check("mixed-audio clips merge", os.path.isfile(out5), out5)
+        check("mixed-audio output keeps an audio track",
+              subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                              "-show_entries", "stream=codec_name", "-of", "csv=p=0", out5],
+                             capture_output=True, text=True).stdout.strip() != "")
+        check("mixed-audio output has the total frame count", frame_count(out5) == 14,
+              f"{frame_count(out5)} != 14")
+
+        # --- video only: no clip has a track -----------------------------------
+        print("video only")
+        vonlydir = tempfile.mkdtemp(prefix="lesca-combine-video-", dir=workdir)
+        make_clip(os.path.join(vonlydir, "vid_a.mp4"), 8, "red", audio=False)
+        make_clip(os.path.join(vonlydir, "vid_b.mp4"), 6, "blue", audio=False)
+        out6 = run(vonlydir, "vid")
+        check("video-only clips merge", os.path.isfile(out6), out6)
+        check("video-only output has no audio track",
+              subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                              "-show_entries", "stream=codec_name", "-of", "csv=p=0", out6],
+                             capture_output=True, text=True).stdout.strip() == "")
+        check("video-only output has the total frame count", frame_count(out6) == 14,
+              f"{frame_count(out6)} != 14")
 
         # --- single source ----------------------------------------------------
         print("single source")

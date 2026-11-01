@@ -16,7 +16,7 @@ Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 | [Save Video (Lesca)](#save-video-lesca) | Merges the built-in `Create Video` + `Save Video` into a single node | User-specified save path (no `_000001_` counter suffix); frame + audio trimming; trimmed `images` / `audio` passed through as outputs |
 | [Video Info (Lesca)](#video-info-lesca) | Reports a video's properties as individual outputs, for workflow branching | `fps` / `bit_depth` / `color_space` / `width` / `height` / `frame_count`, plus a one-per-line `video_info` string; output node, runs standalone |
 | [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); audio span sliced to match the exported frames |
-| [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in a directory into one file | Triggered by any upstream output; stream-copy merge with a re-encode fallback; previous merge outputs self-excluded from the scan; execution cache keyed by the source-file fingerprint |
+| [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in a directory into one file | Triggered by any upstream output; always re-encodes through the concat filter for a clean audio seam; previous merge outputs self-excluded from the scan; execution cache keyed by the source-file fingerprint |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | Cuts a head/tail block of frames and adds independent per-frame noise | Per-layer strength schedule (`frame_num_list` / `strenth_list`); optional seed for reproducible per-frame noise; short-video clamp |
 | [Context Clips (Lesca)](#context-clips-lesca) | Plans the clip schedule for a target video as pure metadata arithmetic | `target_frame_count` / `total_clips` / `last_clip_frames` from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
 
@@ -250,13 +250,19 @@ directory it was saved into.
 * Previously produced `<prefix>_merged-…mp4` outputs are **excluded from the
   scan**, so running the node on the same directory again merges the original
   clips, never an already-merged file.
-* Merge strategy: ffmpeg-python's concat demuxer with `-c copy` splices the
-  streams without decoding (lossless and fast, for clips from the same
-  pipeline). When stream copy fails because the inputs are incompatible
-  (different codecs, resolutions or frame rates), the node falls back
-  automatically to a concat-filter re-encode into one H.264 stream (audio
-  dropped). Both command lines are built with the ffmpeg-python package —
-  which still requires the ffmpeg binary on PATH.
+* Merge strategy: every merge is a **concat-filter re-encode** into one fresh
+  H.264 + AAC file — the stream-copy path was dropped because the concat
+  demuxer's `-c copy` duplicates the last AAC frame at each splice whenever a
+  clip's audio length is not a whole number of AAC frames, which shows up as an
+  audible dropout and repeat at the seam. The re-encode normalises each input's
+  video to the first source's resolution and frame rate, and each input's audio
+  to the first audio-bearing source's sample rate and channel layout, so it
+  also handles incompatible inputs (different codecs, resolutions, frame rates).
+  A source without an audio track contributes a silence stream of matching
+  duration, and each clip's audio is trimmed to its own video duration so the
+  excess AAC padding adds no extra frame and the splice stays clean. The command
+  line is built directly and run with `subprocess` — the `ffmpeg` **and**
+  `ffprobe` binaries must be on PATH (checked up front).
 * The node is an output node: queueing the graph executes it even when nothing
   is wired to its `filename` output.
 * Execution caching is keyed by a fingerprint of the matched source files'
@@ -382,8 +388,8 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
   force-rate → trim → frame-cap → resize pipeline, audio span slicing).
 * `lesca_video_combine.py` — Video Combine node (prefix-scan in ascending
   filename order, `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` output with
-  self-exclusion on re-runs, ffmpeg-python stream-copy merge with a re-encode
-  fallback, source-set execution-cache fingerprint).
+  self-exclusion on re-runs, always a concat-filter re-encode for a clean audio
+  seam, source-set execution-cache fingerprint).
 * `lesca_video_add_noise.py` — Video Add Noise node (head/tail frame cut via
   the lazy `as_trimmed` window, independent per-frame noise with a per-layer
   strength schedule, optional seed, short-video clamp).
