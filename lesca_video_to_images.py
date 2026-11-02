@@ -209,7 +209,7 @@ class VideoToImagesLesca(io.ComfyNode):
                     min=0,
                     tooltip="Number of frames to drop after the rate conversion (0 = no trim).",
                 ),
-                io.Int.Input(
+                io.Float.Input(
                     "force_rate",
                     display_name="force rate",
                     default=0,
@@ -282,7 +282,7 @@ class VideoToImagesLesca(io.ComfyNode):
     def execute(cls, video, frame_cap, trim_mode, trim_frames, force_rate,
                 custom_width, custom_height):
         R = int(trim_frames or 0)
-        T = int(force_rate or 0)
+        T = float(force_rate or 0)
         C = int(frame_cap or 0)
 
         # Preferred path: decode only the frames and audio the export needs.

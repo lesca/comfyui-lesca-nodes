@@ -61,7 +61,7 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
   * frame_cap: 整数类型。需要导出的帧数。默认为0，表示所有帧。
   * trim_mode: 跳过帧数的模式。head: 从第0帧开始去掉帧；tail: 去掉尾部的帧。
   * trim_frames: 整数类型。需要去掉的帧数。默认为0，不丢掉任何帧。
-  * force_rate: 整数类型。强制帧率转换。默认0，帧率不变。如果force_rate=24，对于30帧的视频，将会强制转成24帧。
+  * force_rate: float 类型。强制帧率转换。默认0，帧率不变。如果force_rate=24，对于30帧的视频，将会强制转成24帧。
   * custom_width: 整数类型。设置视频的宽度。默认为0。
   * custom_height: 整数类型。设置视频的高度。默认为0。
 * 输出：
@@ -131,7 +131,7 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
 
 * 输入：
   * video: io.Video 类型。接收上游节点的视频输出。获取视频的 `frame_count` 和 `fps` 信息 （和 Video Info 节点一样）。
-  * target_fps: int 类型。默认0，表示保持不变。
+  * target_fps: float 类型。默认0，表示保持不变。
   * clip_frames: int 类型。默认 124。
   * context_frames: int 类型。默认 22。
   * init_index: int 类型。默认 0.

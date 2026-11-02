@@ -162,7 +162,7 @@ Video`，`format`（嵌套 `codec` → `encoding` → `crf`）来自 `Save Video
 | `frame_cap` | `Int` | 最多导出的帧数。默认 `0` = 全部导出。 |
 | `trim_mode` | `Combo` | `head`：丢掉最前面的帧；`tail`：丢掉最末尾的帧。默认 `head`。 |
 | `trim_frames` | `Int` | 要丢掉的帧数，在帧率换算之后应用。默认 `0` = 不裁剪。 |
-| `force_rate` | `Int` | 强制的输出帧率。默认 `0` = 保持源帧率。`force_rate = 24` 时，30fps 的内容会被重采样成 24fps 的帧序列。 |
+| `force_rate` | `Float` | 强制的输出帧率。默认 `0` = 保持源帧率。`force_rate = 24` 时，30fps 的内容会被重采样成 24fps 的帧序列。 |
 | `custom_width` | `Int` | 目标宽度（像素）。默认 `0` = 保持源宽度。 |
 | `custom_height` | `Int` | 目标高度（像素）。默认 `0` = 保持源高度。 |
 
@@ -305,7 +305,7 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `video` | `Video` | 要切片的视频；节点读取其 `frame_count` 和 `fps`（与 Video Info (Lesca) 相同的访问器，不解码）。 |
-| `target_fps` | `Int` | 默认 `0` = 保持源帧率（按 `frame_count` 切片）；否则按转换到该帧率后的总帧数切片。 |
+| `target_fps` | `Float` | 默认 `0` = 保持源帧率（按 `frame_count` 切片）；否则按转换到该帧率后的总帧数切片。 |
 | `clip_frames` | `Int` | 默认 `124`。固定步长的切片窗口（每个片段的帧数）；必须大于 `context_frames`。 |
 | `context_frames` | `Int` | 默认 `22`。相邻切片之间保留的重叠帧数——用于考虑 "Add Guide" / "Motion Context" 节点产生的重叠帧影响。 |
 | `init_index` | `Int` | 默认 `0`。本节点运行前已消耗的片段数；从总片段数中减去。 |

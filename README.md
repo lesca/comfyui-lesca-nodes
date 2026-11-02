@@ -180,7 +180,7 @@ any other video node.
 | `frame_cap`     | `Int`   | Maximum number of frames to export. Default `0` = all frames. |
 | `trim_mode`     | `Combo` | `head`: drop frames from the front; `tail`: drop frames from the back. Default `head`. |
 | `trim_frames`   | `Int`   | Number of frames to drop, applied after the rate conversion. Default `0` = no trim. |
-| `force_rate`    | `Int`   | Forced output frame rate. Default `0` = keep the source rate. With `force_rate = 24`, 30 fps content is re-sampled to a 24 fps frame sequence. |
+| `force_rate`    | `Float` | Forced output frame rate. Default `0` = keep the source rate. With `force_rate = 24`, 30 fps content is re-sampled to a 24 fps frame sequence. |
 | `custom_width`  | `Int`   | Target width in pixels. Default `0` = keep the source width. |
 | `custom_height` | `Int`   | Target height in pixels. Default `0` = keep the source height. |
 
@@ -355,7 +355,7 @@ its outputs.
 | Field | Type | Meaning |
 |-------|------|---------|
 | `video` | `Video` | The video to slice; the node reads its `frame_count` and `fps` (the same accessors as Video Info (Lesca), no decoding). |
-| `target_fps` | `Int` | Default `0` = keep the source frame rate (slice by `frame_count`); otherwise slicing uses the frame count converted to this rate. |
+| `target_fps` | `Float` | Default `0` = keep the source frame rate (slice by `frame_count`); otherwise slicing uses the frame count converted to this rate. |
 | `clip_frames` | `Int` | Default `124`. The fixed-stride slicing window (frames per clip); must be greater than `context_frames`. |
 | `context_frames` | `Int` | Default `22`. The overlap kept between adjacent slices — it accounts for the overlap-frame effect of the "Add Guide" / "Motion Context" nodes. |
 | `init_index` | `Int` | Default `0`. Clips already consumed before this node runs; subtracted from the total clip count. |

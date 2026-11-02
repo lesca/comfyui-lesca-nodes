@@ -63,7 +63,7 @@ class ContextClipsLesca(io.ComfyNode):
                     display_name="video",
                     tooltip="The video to slice. The node reads its frame count and frame rate (the same accessors as Video Info, no decoding). Accepts the video output of Load Video (Lesca) or any other video node.",
                 ),
-                io.Int.Input(
+                io.Float.Input(
                     "target_fps",
                     display_name="target fps",
                     default=0,
@@ -138,7 +138,7 @@ class ContextClipsLesca(io.ComfyNode):
 
         # target_fps = 0 means "keep the source rate" (the raw formula would
         # give 0 frames); substituting the source fps yields frame_count.
-        effective_fps = float(target_fps) if int(target_fps or 0) > 0 else fps
+        effective_fps = float(target_fps) if float(target_fps or 0) > 0 else fps
 
         # 1. 计算目标总帧数（避免重复计算）—— int() 截断，非四舍五入
         target_frames = int((frame_count / fps) * effective_fps)
