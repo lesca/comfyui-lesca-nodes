@@ -13,8 +13,9 @@ clip-based generation pipeline should cover the target length:
   (incremented by one when the remainder branch below keeps a last clip).
 * ``last_clip_frames`` — frame count of the final clip, from
   ``remainder = (target_frame_count - clip_frames) % stride``:
-  ``0`` when ``floor(remainder / 17) == 0`` (a remainder below 17 frames —
-  including exactly covering the target — leaves no final clip); otherwise
+  ``stride`` when ``floor(remainder / 17) == 0`` (a remainder below 17
+  frames — including exactly covering the target — means the last clip is a
+  full stride); otherwise
   ``floor(remainder / 17) * 17 + context_frames`` and ``total_clips`` is
   incremented by one.
 
@@ -62,7 +63,7 @@ class ContextClipsLesca(io.ComfyNode):
                 "run the train",
                 "minimax h3",
             ],
-            description="For MiniMax H3 action-migration run-the-train long-video generation: slice the video's frame count with a fixed-stride clip window, overlapping slices by context frames to cancel the 'Add Guide' / 'Motion Context' overlap-frame effect; report the run's total frame count, total clip count and final clip size.",
+            description="For MiniMax H3 action-migration run-the-train long-video generation: slice the video's frame count with a fixed-stride clip window, overlapping slices by context frames to account for the overlap-frame effect of the 'Add Guide' / 'Motion Context' nodes; report the run's total frame count, total clip count and final clip size.",
             is_output_node=True,
             inputs=[
                 io.Video.Input(
@@ -89,7 +90,7 @@ class ContextClipsLesca(io.ComfyNode):
                     display_name="context frames",
                     default=22,
                     min=0,
-                    tooltip="Overlap kept between adjacent slices — it cancels the overlap-frame effect of the 'Add Guide' / 'Motion Context' nodes.",
+                    tooltip="Overlap kept between adjacent slices — it accounts for the overlap-frame effect of the 'Add Guide' / 'Motion Context' nodes.",
                 ),
                 io.Int.Input(
                     "init_index",
@@ -110,7 +111,7 @@ class ContextClipsLesca(io.ComfyNode):
                 ),
                 io.Int.Output(
                     display_name="last_clip_frames",
-                    tooltip="The frame count the final clip must carry: the tail aligned to the 17n+5 pattern (a multiple of 17 plus context frames, 22 by default); 0 when there is no final clip.",
+                    tooltip="The frame count the final clip must carry: the tail aligned to the 17n+5 pattern (a multiple of 17 plus context frames, 22 by default); the full stride (clip_frames - context_frames, 102 by default) when the remainder is below 17 frames.",
                 ),
             ],
         )
@@ -164,8 +165,9 @@ class ContextClipsLesca(io.ComfyNode):
 
         # 4. 最后片段帧数 last_clip_frames
         remainder = (target_frame_count - clip_frames) % stride
-        if math.floor(remainder / 17) == 0:
-            last_clip_frames = 0
+        if math.floor(remainder / 17) == 0:  # remainder < 17
+            # last clip is a full stride
+            last_clip_frames = stride
         else:
             last_clip_frames = math.floor(remainder / 17) * 17 + context_frames
             total_clips += 1

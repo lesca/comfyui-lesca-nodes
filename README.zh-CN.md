@@ -18,7 +18,7 @@ Lesca 的自定义 ComfyUI 节点。
 | [Video to Images (Lesca)](#video-to-images-lesca) | 把视频解码成一批图片帧 | force-rate → trim → frame-cap → resize 管线；窗口化解码（不全量解码）；音频区间随导出帧同步裁剪 |
 | [Video Combine (Lesca)](#video-combine-lesca) | 把目录中所有同前缀的视频文件合并成一个 | 任意上游输出触发；始终经 concat filter 重编码、接缝干净；自动排除已合并产物；按源文件指纹做执行缓存 |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | 截取头部/尾部一段帧，添加互相独立的逐帧噪声 | 分层强度调度（`frame_num_list` / `strenth_list`）；可选 seed 复现逐帧噪声；短视频钳制 |
-| [Context Clips (Lesca)](#context-clips-lesca) | 适用于 MiniMax H3 动作迁移类跑火车长视频生成：固定步长 `clip_frames` 切片、`context_frames` 重叠（消除 "Add Guide" / "Motion Context" 重叠帧影响） | 由 `frame_count` + `fps` 算出 `target_frame_count` / `total_clips` / `last_clip_frames`；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
+| [Context Clips (Lesca)](#context-clips-lesca) | 适用于 MiniMax H3 动作迁移类跑火车长视频生成：固定步长 `clip_frames` 切片、`context_frames` 重叠（考虑 "Add Guide" / "Motion Context" 节点产生的重叠帧影响） | 由 `frame_count` + `fps` 算出 `target_frame_count` / `total_clips` / `last_clip_frames`；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
 
 ## Load Video (Lesca)
 
@@ -281,7 +281,7 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 
 适用于 MiniMax H3 动作迁移类跑火车长视频生成。节点以固定步长的 `clip_frames`
 （默认 124）对视频总帧数 `frame_count` 切片（指定 `target_fps` 时以转换后的
-总帧数切片），相邻切片之间以 `context_frames`（默认 22）重叠——重叠用于消除
+总帧数切片），相邻切片之间以 `context_frames`（默认 22）重叠——重叠用于考虑
 使用 "Add Guide" / "Motion Context" 节点时产生的重叠帧影响。节点最终算出跑
 火车所需的总片段数 `total_clips`，以及最后一个片段所需的帧数（对齐 17n+5，
 即 17 的倍数加上上下文帧）。全部计算是纯元数据算术：只读取 `frame_count`
@@ -296,7 +296,7 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 | `video` | `Video` | 要切片的视频；节点读取其 `frame_count` 和 `fps`（与 Video Info (Lesca) 相同的访问器，不解码）。 |
 | `target_fps` | `Int` | 默认 `0` = 保持源帧率（按 `frame_count` 切片）；否则按转换到该帧率后的总帧数切片。 |
 | `clip_frames` | `Int` | 默认 `124`。固定步长的切片窗口（每个片段的帧数）；必须大于 `context_frames`。 |
-| `context_frames` | `Int` | 默认 `22`。相邻切片之间保留的重叠帧数——用于消除 "Add Guide" / "Motion Context" 节点产生的重叠帧影响。 |
+| `context_frames` | `Int` | 默认 `22`。相邻切片之间保留的重叠帧数——用于考虑 "Add Guide" / "Motion Context" 节点产生的重叠帧影响。 |
 | `init_index` | `Int` | 默认 `0`。本节点运行前已消耗的片段数；从总片段数中减去。 |
 
 ### 输出
@@ -305,7 +305,7 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 |------|------|------|
 | `target_frame_count` | `Int` | 跑火车切片的总帧数：`frame_count`，或按 `target_fps` 转换后的总帧数。 |
 | `total_clips` | `Int` | 跑火车生成所需的总片段数（已减去 `init_index`）。 |
-| `last_clip_frames` | `Int` | 最后一个片段所需的帧数：尾部帧数对齐 17n+5（17 的倍数加上上下文帧，默认 `context_frames = 22` 时即 17n+5）；无末段时为 `0`。 |
+| `last_clip_frames` | `Int` | 最后一个片段所需的帧数：尾部帧数对齐 17n+5（17 的倍数加上上下文帧，默认 `context_frames = 22` 时即 17n+5）；余数小于 17 帧时最后一个片段为一个完整步长（`stride = clip_frames - context_frames`，默认 102）。 |
 
 ### 行为
 

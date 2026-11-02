@@ -119,7 +119,7 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
 
 ## 目标 7: Context Clips (Lesca) 节点
 
-适用于 MiniMax H3 动作迁移类跑火车长视频生成。本节点以固定步长的 `clip_frames`（默认 124）对 video 的总帧数 `frame_count` 进行切片（如果指定 `target_fps` 则以转换后的总帧数切片），切片之间以 `context_frames` (默认 22) 进行重叠（消除因使用 "Add Guide" 节点或者 "Motion Context" 节点会产生重叠帧的影响），本节点最终计算出跑火车所需总片段数量 `total_clips`，最后一个片段所需帧数（对齐 17n+5）。
+适用于 MiniMax H3 动作迁移类跑火车长视频生成。本节点以固定步长的 `clip_frames`（默认 124）对 video 的总帧数 `frame_count` 进行切片（如果指定 `target_fps` 则以转换后的总帧数切片），切片之间以 `context_frames` (默认 22) 进行重叠（考虑因使用 "Add Guide" 节点或者 "Motion Context" 节点会产生重叠帧的影响），本节点最终计算出跑火车所需总片段数量 `total_clips`，最后一个片段所需帧数（对齐 17n+5）。
 
 * 输入：
   * video: io.Video 类型。接收上游节点的视频输出。获取视频的 `frame_count` 和 `fps` 信息 （和 Video Info 节点一样）。
@@ -148,8 +148,9 @@ total_clips = (
 
 # 4. 最后片段帧数 last_clip_frames
 remainder = (target_frame_count - clip_frames) % stride
-if math.floor(remainder / 17) == 0:
-    last_clip_frames = 0
+if math.floor(remainder / 17) == 0: # remainder < 17 
+    # last clip is a full stride
+    last_clip_frames = stride
 else:
     last_clip_frames = math.floor(remainder / 17) * 17 + context_frames
     total_clips += 1

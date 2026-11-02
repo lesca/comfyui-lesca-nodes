@@ -10,8 +10,9 @@ specs.md:
 * target_fps > 0   -> target_frame_count == int((frame_count / fps) * target_fps)
 * total_clips      -> (target - clip_frames) // stride + 1 - init_index
                       (plus one when the remainder branch keeps a last clip)
-* last_clip_frames -> 0 when floor(remainder / 17) == 0; otherwise
-                      floor(remainder / 17) * 17 + context (Python int %)
+* last_clip_frames -> stride when floor(remainder / 17) == 0
+                      (remainder < 17 -> the last clip is a full stride);
+                      otherwise floor(remainder / 17) * 17 + context (Python int %)
 * ui dict          -> the three fields joined one-per-line
 * schema           -> is_output_node is True
 * validate_inputs  -> linked (None) inputs accepted; clip_frames <=
@@ -74,8 +75,9 @@ def reference(frame_count, fps, target_fps, clip_frames, context_frames,
         (target_frame_count - clip_frames) // stride + 1 - init_index
     )
     remainder = (target_frame_count - clip_frames) % stride
-    if math.floor(remainder / 17) == 0:
-        last_clip_frames = 0
+    if math.floor(remainder / 17) == 0:  # remainder < 17
+        # last clip is a full stride
+        last_clip_frames = stride
     else:
         last_clip_frames = math.floor(remainder / 17) * 17 + context_frames
         total_clips += 1
@@ -101,7 +103,7 @@ v240 = make_video(240, 24)
 out = expect(v240, 240, 24, "240 frames @ 24 fps -> target 240, 2 clips")
 check("target_frame_count is 240", out[0] == 240, f"got {out[0]}")
 check("total_clips is 2", out[1] == 2, f"got {out[1]}")
-check("last_clip_frames is 0", out[2] == 0, f"got {out[2]}")
+check("last_clip_frames is 102 (full stride)", out[2] == 102, f"got {out[2]}")
 
 # ---------------------------------------------------------------------------
 # target_fps > 0 -> resample the frame count
@@ -128,23 +130,25 @@ out = expect(v50, 50, 10, "50 frames @ 10 fps -> 1 clip, last clip 39")
 check("last_clip_frames is 39", out[2] == 39, f"got {out[2]}")
 
 # ---------------------------------------------------------------------------
-# remainder == 0 -> the target is exactly covered, last clip is empty
+# remainder == 0 -> the target is exactly covered: the last clip is a full
+# stride (clip_frames - context_frames == 102), no clip dropped
 # ---------------------------------------------------------------------------
-print("== remainder == 0 -> last clip 0, no clip dropped")
+print("== remainder == 0 -> last clip 102, no clip dropped")
 v226 = make_video(226, 24)
-out = expect(v226, 226, 24, "226 frames @ 24 fps -> 2 clips, last clip 0")
+out = expect(v226, 226, 24, "226 frames @ 24 fps -> 2 clips, last clip 102")
 check("total_clips is 2", out[1] == 2, f"got {out[1]}")
-check("last_clip_frames is 0", out[2] == 0, f"got {out[2]}")
+check("last_clip_frames is 102 (full stride)", out[2] == 102, f"got {out[2]}")
 
 # ---------------------------------------------------------------------------
-# 0 < remainder < 17 -> floor(remainder / 17) == 0: no final clip, and
-# total_clips is left unchanged (the // division already counts full strides)
+# 0 < remainder < 17 -> floor(remainder / 17) == 0: the last clip is a full
+# stride (102), and total_clips is left unchanged (the // division already
+# counts full strides)
 # ---------------------------------------------------------------------------
-print("== 0 < remainder < 17 -> last clip 0, total unchanged")
+print("== 0 < remainder < 17 -> last clip 102, total unchanged")
 v231 = make_video(231, 24)
-out = expect(v231, 231, 24, "231 frames @ 24 fps -> 2 clips, last clip 0")
+out = expect(v231, 231, 24, "231 frames @ 24 fps -> 2 clips, last clip 102")
 check("total_clips is 2", out[1] == 2, f"got {out[1]}")
-check("last_clip_frames is 0", out[2] == 0, f"got {out[2]}")
+check("last_clip_frames is 102 (full stride)", out[2] == 102, f"got {out[2]}")
 
 # ---------------------------------------------------------------------------
 # remainder >= 17 -> final clip kept: floor(remainder / 17) * 17 + context
@@ -166,7 +170,7 @@ lines = info.split("\n")
 check("three lines", len(lines) == 3, f"got {len(lines)}: {info!r}")
 check("line 1 is target_frame_count", lines[0] == "target_frame_count: 240", f"got {lines[0]!r}")
 check("line 2 is total_clips", lines[1] == "total_clips: 2", f"got {lines[1]!r}")
-check("line 3 is last_clip_frames", lines[2] == "last_clip_frames: 0", f"got {lines[2]!r}")
+check("line 3 is last_clip_frames", lines[2] == "last_clip_frames: 102", f"got {lines[2]!r}")
 
 # ---------------------------------------------------------------------------
 # schema is an output node

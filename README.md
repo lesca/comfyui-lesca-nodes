@@ -18,7 +18,7 @@ Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 | [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); audio span sliced to match the exported frames |
 | [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in a directory into one file | Triggered by any upstream output; always re-encodes through the concat filter for a clean audio seam; previous merge outputs self-excluded from the scan; execution cache keyed by the source-file fingerprint |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | Cuts a head/tail block of frames and adds independent per-frame noise | Per-layer strength schedule (`frame_num_list` / `strenth_list`); optional seed for reproducible per-frame noise; short-video clamp |
-| [Context Clips (Lesca)](#context-clips-lesca) | For MiniMax H3 action-migration "run-the-train" long-video generation: slice `frame_count` with a fixed-stride `clip_frames`, overlapping slices by `context_frames` to cancel the "Add Guide" / "Motion Context" overlap-frame effect | `target_frame_count` / `total_clips` / `last_clip_frames` from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
+| [Context Clips (Lesca)](#context-clips-lesca) | For MiniMax H3 action-migration "run-the-train" long-video generation: slice `frame_count` with a fixed-stride `clip_frames`, overlapping slices by `context_frames` to account for the overlap-frame effect produced by the "Add Guide" / "Motion Context" nodes | `target_frame_count` / `total_clips` / `last_clip_frames` from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
 
 ## Load Video (Lesca)
 
@@ -326,7 +326,7 @@ For MiniMax H3 action-migration "run-the-train" long-video generation. The
 node slices the video's total frame count (`frame_count`, or the frame count
 after `target_fps` conversion) with a fixed-stride `clip_frames` (default
 124) slicing window, and adjacent slices overlap by `context_frames` (default
-22) — the overlap cancels the overlap-frame effect produced by the "Add
+22) — the overlap accounts for the overlap-frame effect produced by the "Add
 Guide" / "Motion Context" nodes. It then reports the total number of clips
 `total_clips` the run needs and the frame count the final clip must carry
 (aligned to the 17n+5 pattern). All of it is pure arithmetic on the video's
@@ -343,7 +343,7 @@ its outputs.
 | `video` | `Video` | The video to slice; the node reads its `frame_count` and `fps` (the same accessors as Video Info (Lesca), no decoding). |
 | `target_fps` | `Int` | Default `0` = keep the source frame rate (slice by `frame_count`); otherwise slicing uses the frame count converted to this rate. |
 | `clip_frames` | `Int` | Default `124`. The fixed-stride slicing window (frames per clip); must be greater than `context_frames`. |
-| `context_frames` | `Int` | Default `22`. The overlap kept between adjacent slices — it cancels the overlap-frame effect of the "Add Guide" / "Motion Context" nodes. |
+| `context_frames` | `Int` | Default `22`. The overlap kept between adjacent slices — it accounts for the overlap-frame effect of the "Add Guide" / "Motion Context" nodes. |
 | `init_index` | `Int` | Default `0`. Clips already consumed before this node runs; subtracted from the total clip count. |
 
 ### Outputs
@@ -352,7 +352,7 @@ its outputs.
 |-------|------|---------|
 | `target_frame_count` | `Int` | The total frame count the run slices — `frame_count`, or the frame count after `target_fps` conversion. |
 | `total_clips` | `Int` | The total number of clips the run-the-train generation needs (already reduced by `init_index`). |
-| `last_clip_frames` | `Int` | The frame count the final clip must carry: the tail aligned to the 17n+5 pattern (a multiple of 17 plus `context_frames`, which is 22 by default); `0` when there is no final clip. |
+| `last_clip_frames` | `Int` | The frame count the final clip must carry: the tail aligned to the 17n+5 pattern (a multiple of 17 plus `context_frames`, which is 22 by default); the full stride (`clip_frames - context_frames`, 102 by default) when the remainder is below 17 frames. |
 
 ### Behavior
 
