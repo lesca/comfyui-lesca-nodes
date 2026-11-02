@@ -6,17 +6,20 @@ return exactly the values we want — no file, no decoding) and asserts the
 spec's formulas against an independent reference implementation copied from
 specs.md:
 
-* target_fps = 0   -> "keep unchanged": target_frame_count == frame_count
-* target_fps > 0   -> target_frame_count == int((frame_count / fps) * target_fps)
-* total_clips      -> (target - clip_frames) // stride + 1 - init_index
-                      (plus one when the remainder branch keeps a last clip)
-* last_clip_frames -> stride when floor(remainder / 17) == 0
-                      (remainder < 17 -> the last clip is a full stride);
-                      otherwise floor(remainder / 17) * 17 + context (Python int %)
-* ui dict          -> the three fields joined one-per-line
+* target_fps = 0   -> "keep unchanged": target_frames == frame_count
+* target_fps > 0   -> target_frames == int((frame_count / fps) * target_fps)
+* total_clips      -> (target_frames - clip_frames) // stride_frames + 1 - init_index
+                       (plus one when the remainder branch keeps a last clip)
+* last_clip_frames -> stride_frames when floor(remainder / 17) == 0
+                       (remainder < 17 -> the last clip is a full stride);
+                       otherwise floor(remainder / 17) * 17 + context (Python int %)
+* clip_info dict   -> carries clip_frames, init_index, total_clips, last_clip_frames, target_frames
+* ui dict          -> the six fields joined one-per-line
 * schema           -> is_output_node is True
 * validate_inputs  -> linked (None) inputs accepted; clip_frames <=
-                      context_frames rejected with a message
+                       context_frames rejected with a message
+
+Also verifies the new Current Clip Frames (Lesca) node (Goal 8).
 
 Run: /workspace/venvs/lesca-venv/bin/python3 tests/test_context_clips.py
 """
@@ -34,6 +37,7 @@ import torch
 from comfy_api.latest import InputImpl, Types
 
 from lesca_context_clips import ContextClipsLesca
+from lesca_current_clip_frames import CurrentClipFramesLesca
 
 PASS = 0
 FAIL = 0
@@ -69,29 +73,39 @@ def run(video, **kw):
 def reference(frame_count, fps, target_fps, clip_frames, context_frames,
               init_index):
     eff = target_fps if target_fps > 0 else fps
-    target_frame_count = int((frame_count / fps) * eff)
-    stride = clip_frames - context_frames
+    target_frames = int((frame_count / fps) * eff)
+    stride_frames = clip_frames - context_frames
     total_clips = (
-        (target_frame_count - clip_frames) // stride + 1 - init_index
+        (target_frames - clip_frames) // stride_frames + 1 - init_index
     )
-    remainder = (target_frame_count - clip_frames) % stride
+    remainder = (target_frames - clip_frames) % stride_frames
     if math.floor(remainder / 17) == 0:  # remainder < 17
         # last clip is a full stride
-        last_clip_frames = stride
+        last_clip_frames = stride_frames
     else:
         last_clip_frames = math.floor(remainder / 17) * 17 + context_frames
         total_clips += 1
-    return (target_frame_count, total_clips, last_clip_frames)
+    return (target_frames, total_clips, last_clip_frames)
 
 
 def expect(video, frame_count, fps, label, **kw):
-    """Run the node and compare all three outputs to the reference formula."""
+    """Run the node and compare outputs to the reference formula."""
     out = run(video, **kw)
-    got = (out[0], out[1], out[2])
-    want = reference(frame_count, fps, kw.get("target_fps", 0),
-                     kw.get("clip_frames", 124), kw.get("context_frames", 22),
-                     kw.get("init_index", 0))
-    check(label, got == want, f"got {got}, want {want}")
+    total_clips = out[0]
+    clip_info = out[1]
+    want_target, want_total, want_last = reference(
+        frame_count, fps, kw.get("target_fps", 0),
+        kw.get("clip_frames", 124), kw.get("context_frames", 22),
+        kw.get("init_index", 0))
+    check(label,
+          total_clips == want_total and
+          clip_info["target_frames"] == want_target and
+          clip_info["last_clip_frames"] == want_last and
+          clip_info["clip_frames"] == kw.get("clip_frames", 124) and
+          clip_info["init_index"] == kw.get("init_index", 0) and
+          clip_info["total_clips"] == want_total,
+          f"got total={total_clips}, info={clip_info}; "
+          f"want total={want_total}, target={want_target}, last={want_last}")
     return out
 
 
@@ -101,24 +115,24 @@ def expect(video, frame_count, fps, label, **kw):
 print("== target_fps = 0 keeps the source frame count")
 v240 = make_video(240, 24)
 out = expect(v240, 240, 24, "240 frames @ 24 fps -> target 240, 2 clips")
-check("target_frame_count is 240", out[0] == 240, f"got {out[0]}")
-check("total_clips is 2", out[1] == 2, f"got {out[1]}")
-check("last_clip_frames is 102 (full stride)", out[2] == 102, f"got {out[2]}")
+check("total_clips is 2", out[0] == 2, f"got {out[0]}")
+check("clip_info.target_frames is 240", out[1]["target_frames"] == 240, f"got {out[1]}")
+check("clip_info.last_clip_frames is 102 (full stride)", out[1]["last_clip_frames"] == 102, f"got {out[1]}")
 
 # ---------------------------------------------------------------------------
 # target_fps > 0 -> resample the frame count
 # ---------------------------------------------------------------------------
 print("== target_fps = 12 resamples 240 frames @ 24 fps to 120")
 out = expect(v240, 240, 24, "target 120 -> 1 clip, last clip 107", target_fps=12)
-check("last_clip_frames is 107", out[2] == 107, f"got {out[2]}")
-check("total_clips is 1", out[1] == 1, f"got {out[1]}")
+check("last_clip_frames is 107", out[1]["last_clip_frames"] == 107, f"got {out[1]}")
+check("total_clips is 1", out[0] == 1, f"got {out[0]}")
 
 # ---------------------------------------------------------------------------
 # init_index subtracts from the total clip count
 # ---------------------------------------------------------------------------
 print("== init_index = 2 reduces total clips")
 out = expect(v240, 240, 24, "init_index 2 -> 0 clips", init_index=2)
-check("total_clips is 0", out[1] == 0, f"got {out[1]}")
+check("total_clips is 0", out[0] == 0, f"got {out[0]}")
 
 # ---------------------------------------------------------------------------
 # Python int % semantics on a short target (remainder stays non-negative,
@@ -127,7 +141,7 @@ check("total_clips is 0", out[1] == 0, f"got {out[1]}")
 print("== short target: int % stays non-negative")
 v50 = make_video(50, 10)
 out = expect(v50, 50, 10, "50 frames @ 10 fps -> 1 clip, last clip 39")
-check("last_clip_frames is 39", out[2] == 39, f"got {out[2]}")
+check("last_clip_frames is 39", out[1]["last_clip_frames"] == 39, f"got {out[1]}")
 
 # ---------------------------------------------------------------------------
 # remainder == 0 -> the target is exactly covered: the last clip is a full
@@ -136,8 +150,8 @@ check("last_clip_frames is 39", out[2] == 39, f"got {out[2]}")
 print("== remainder == 0 -> last clip 102, no clip dropped")
 v226 = make_video(226, 24)
 out = expect(v226, 226, 24, "226 frames @ 24 fps -> 2 clips, last clip 102")
-check("total_clips is 2", out[1] == 2, f"got {out[1]}")
-check("last_clip_frames is 102 (full stride)", out[2] == 102, f"got {out[2]}")
+check("total_clips is 2", out[0] == 2, f"got {out[0]}")
+check("last_clip_frames is 102 (full stride)", out[1]["last_clip_frames"] == 102, f"got {out[1]}")
 
 # ---------------------------------------------------------------------------
 # 0 < remainder < 17 -> floor(remainder / 17) == 0: the last clip is a full
@@ -147,8 +161,8 @@ check("last_clip_frames is 102 (full stride)", out[2] == 102, f"got {out[2]}")
 print("== 0 < remainder < 17 -> last clip 102, total unchanged")
 v231 = make_video(231, 24)
 out = expect(v231, 231, 24, "231 frames @ 24 fps -> 2 clips, last clip 102")
-check("total_clips is 2", out[1] == 2, f"got {out[1]}")
-check("last_clip_frames is 102 (full stride)", out[2] == 102, f"got {out[2]}")
+check("total_clips is 2", out[0] == 2, f"got {out[0]}")
+check("last_clip_frames is 102 (full stride)", out[1]["last_clip_frames"] == 102, f"got {out[1]}")
 
 # ---------------------------------------------------------------------------
 # remainder >= 17 -> final clip kept: floor(remainder / 17) * 17 + context
@@ -157,20 +171,23 @@ check("last_clip_frames is 102 (full stride)", out[2] == 102, f"got {out[2]}")
 print("== remainder >= 17 -> last clip 39, total +1")
 v345 = make_video(345, 24)
 out = expect(v345, 345, 24, "345 frames @ 24 fps -> 4 clips, last clip 39")
-check("total_clips is 4", out[1] == 4, f"got {out[1]}")
-check("last_clip_frames is 39", out[2] == 39, f"got {out[2]}")
+check("total_clips is 4", out[0] == 4, f"got {out[0]}")
+check("last_clip_frames is 39", out[1]["last_clip_frames"] == 39, f"got {out[1]}")
 
 # ---------------------------------------------------------------------------
-# the ui dict carries the three fields one-per-line
+# the ui dict carries the six fields one-per-line
 # ---------------------------------------------------------------------------
 print("== ui dict content")
 out = run(v240)
 info = out.ui["context_clips"][0]
 lines = info.split("\n")
-check("three lines", len(lines) == 3, f"got {len(lines)}: {info!r}")
-check("line 1 is target_frame_count", lines[0] == "target_frame_count: 240", f"got {lines[0]!r}")
-check("line 2 is total_clips", lines[1] == "total_clips: 2", f"got {lines[1]!r}")
-check("line 3 is last_clip_frames", lines[2] == "last_clip_frames: 102", f"got {lines[2]!r}")
+check("six lines", len(lines) == 6, f"got {len(lines)}: {info!r}")
+check("line 1 is target_frames", lines[0] == "target_frames: 240", f"got {lines[0]!r}")
+check("line 2 is clip_frames", lines[1] == "clip_frames: 124", f"got {lines[1]!r}")
+check("line 3 is context_frames", lines[2] == "context_frames: 22", f"got {lines[2]!r}")
+check("line 4 is stride_frames", lines[3] == "stride_frames: 102", f"got {lines[3]!r}")
+check("line 5 is total_clips", lines[4] == "total_clips: 2", f"got {lines[4]!r}")
+check("line 6 is last_clip_frames", lines[5] == "last_clip_frames: 102", f"got {lines[5]!r}")
 
 # ---------------------------------------------------------------------------
 # schema is an output node
@@ -205,6 +222,83 @@ try:
     check("negative target_fps raises", False, "no exception")
 except ValueError:
     check("negative target_fps raises ValueError", True)
+
+
+# ===========================================================================
+# Current Clip Frames (Lesca) — Goal 8
+# ===========================================================================
+print("\n== Current Clip Frames (Lesca)")
+
+# Build a clip_info dict from a real run (240 frames @ 24 fps, defaults)
+out = run(v240)
+clip_info = out[1]
+# clip_frames=124, context=22, stride=102, total_clips=2, last_clip_frames=102
+check("clip_info has all keys",
+      set(clip_info.keys()) == {"clip_frames", "init_index", "total_clips", "last_clip_frames", "target_frames"},
+      f"got keys {set(clip_info.keys())}")
+
+# index=0: 0 - 0 + 1 = 1 < 2 -> clip_frames = 124
+out8 = CurrentClipFramesLesca.execute(clip_info, 0)
+check("index=0 -> 124 (not final)", out8[0] == 124, f"got {out8[0]}")
+
+# index=1: 1 - 0 + 1 = 2, not < 2 -> last_clip_frames = 102
+out8 = CurrentClipFramesLesca.execute(clip_info, 1)
+check("index=1 -> 102 (final clip)", out8[0] == 102, f"got {out8[0]}")
+
+# index beyond total: 5 - 0 + 1 = 6 >= 2 -> last_clip_frames
+out8 = CurrentClipFramesLesca.execute(clip_info, 5)
+check("index=5 -> 102 (beyond total, final)", out8[0] == 102, f"got {out8[0]}")
+
+# init_index = 2 scenario: total_clips = 0
+out_cc = run(v240, init_index=2)
+ci = out_cc[1]
+check("init_index=2: total_clips is 0", ci["total_clips"] == 0, f"got {ci}")
+# index=0: 0 - 2 + 1 = -1 < 0 -> clip_frames
+out8 = CurrentClipFramesLesca.execute(ci, 0)
+check("init_index=2, index=0 -> 124 (not final, negative relative)", out8[0] == 124, f"got {out8[0]}")
+# index=2: 2 - 2 + 1 = 1, not < 0 -> last_clip_frames
+out8 = CurrentClipFramesLesca.execute(ci, 2)
+check("init_index=2, index=2 -> 102 (final)", out8[0] == 102, f"got {out8[0]}")
+
+# remainder >= 17 scenario (345 frames -> total_clips=4, last_clip_frames=39)
+out_cc = run(v345)
+ci = out_cc[1]
+check("345: total_clips is 4, last is 39", ci["total_clips"] == 4 and ci["last_clip_frames"] == 39, f"got {ci}")
+out8 = CurrentClipFramesLesca.execute(ci, 0)
+check("345, index=0 -> 124", out8[0] == 124, f"got {out8[0]}")
+out8 = CurrentClipFramesLesca.execute(ci, 3)
+check("345, index=3 -> 39 (final)", out8[0] == 39, f"got {out8[0]}")
+
+# ui dict
+out8 = CurrentClipFramesLesca.execute(clip_info, 0)
+info8 = out8.ui["current_clip_frames"][0]
+check("ui has current_clip_frames", "current_clip_frames" in info8, f"got {info8!r}")
+
+# schema
+schema8 = CurrentClipFramesLesca.define_schema()
+check("is_output_node is True", schema8.is_output_node is True, f"got {schema8.is_output_node}")
+check("node_id is CurrentClipFramesLesca", schema8.node_id == "CurrentClipFramesLesca", f"got {schema8.node_id}")
+
+# validate_inputs
+check("valid clip_info + index accepted",
+      CurrentClipFramesLesca.validate_inputs(clip_info, 0) is True)
+check("all-None (linked) accepted",
+      CurrentClipFramesLesca.validate_inputs(None, None) is True)
+try:
+    CurrentClipFramesLesca.validate_inputs("not a dict", 0)
+    check("non-dict clip_info raises", False, "no exception")
+except ValueError as e:
+    check("non-dict clip_info raises ValueError", "dict" in str(e), f"msg={e!r}")
+try:
+    CurrentClipFramesLesca.validate_inputs({"clip_frames": 1}, 0)
+    check("missing keys raises", False, "no exception")
+except ValueError as e:
+    check("missing keys raises ValueError", "missing" in str(e), f"msg={e!r}")
+try:
+    CurrentClipFramesLesca.validate_inputs(clip_info, -1)
+    check("negative index raises", False, "no exception")
+except ValueError:
+    check("negative index raises ValueError", True)
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

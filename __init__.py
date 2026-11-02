@@ -5,7 +5,7 @@ and looks for a ``comfy_entrypoint`` callable that returns a
 ``comfy_api.latest.ComfyExtension`` (the V3 registration mechanism, the same one
 used by ComfyUI's own ``comfy_extras/nodes_video.py``).
 
-Seven nodes are registered:
+Eight nodes are registered:
 
 * ``LoadVideoLesca``    — Load Video (Lesca), a fully path-specifiable video loader.
 * ``SaveVideoLesca``    — Save Video (Lesca), merges the built-in Create Video and
@@ -28,10 +28,15 @@ Seven nodes are registered:
   per-layer strength schedule (frame_num_list / strenth_list); an optional seed
   makes the per-frame noise reproducible (seed 0 is fully random).
 * ``ContextClipsLesca`` — Context Clips (Lesca), plans the clip schedule for a
-  target video: reports the target frame count, total clip count and last-clip
-  frame count as pure arithmetic on the video's container metadata (no
-  decoding); an output node that also shows the three fields in a read-only
-  text box.
+  target video: reports the total clip count and a ``clip_info`` dict carrying
+  all intermediate values as pure arithmetic on the video's container
+  metadata (no decoding); an output node that also shows the six fields in a
+  read-only text box.
+* ``CurrentClipFramesLesca`` — Current Clip Frames (Lesca), given the
+  ``clip_info`` dict from Context Clips (Lesca) and a clip index, resolves the
+  frame count that clip must carry (clip_frames for non-final clips,
+  last_clip_frames for the final clip); an output node that shows the value in
+  a read-only text box.
 
 The Load Video module owns its node, its preview route, and its extension; the
 combined extension below delegates to it so the package exposes one entry point.
@@ -70,6 +75,9 @@ from lesca_video_add_noise import (  # noqa: E402
 from lesca_context_clips import (  # noqa: E402
     ContextClipsLesca,
 )
+from lesca_current_clip_frames import (  # noqa: E402
+    CurrentClipFramesLesca,
+)
 
 # Serve the custom frontend ("Update" button + live preview for Load Video
 # (Lesca)). WEB_DIRECTORY is
@@ -88,7 +96,7 @@ class LescaExtension(ComfyExtension):
 
     @classmethod
     async def get_node_list(cls) -> list:
-        return [LoadVideoLesca, SaveVideoLesca, VideoInfoLesca, VideoToImagesLesca, VideoCombineLesca, VideoAddNoiseLesca, ContextClipsLesca]
+        return [LoadVideoLesca, SaveVideoLesca, VideoInfoLesca, VideoToImagesLesca, VideoCombineLesca, VideoAddNoiseLesca, ContextClipsLesca, CurrentClipFramesLesca]
 
 
 async def comfy_entrypoint() -> LescaExtension:
@@ -104,6 +112,7 @@ __all__ = [
     "VideoCombineLesca",
     "VideoAddNoiseLesca",
     "ContextClipsLesca",
+    "CurrentClipFramesLesca",
     "LescaExtension",
     "comfy_entrypoint",
 ]

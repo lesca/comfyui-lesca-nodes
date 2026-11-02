@@ -1,43 +1,36 @@
 """Context Clips (Lesca) — plan the clip schedule for a target video.
 
 Accepts any ``io.Video`` (in particular the output of Load Video (Lesca) or
-Video to Images (Lesca)) and reports, as three integer outputs, how a
-clip-based generation pipeline should cover the target length:
+Video to Images (Lesca)) and reports, as outputs, how a clip-based generation
+pipeline should cover the target length:
 
-* ``target_frame_count`` — total frames of the video re-sampled to
-  ``target_fps``: ``int((frame_count / fps) * target_fps)``. ``target_fps = 0``
-  means "keep the source rate", so the count equals ``frame_count``.
 * ``total_clips`` — number of clips needed with a stride of
   ``clip_frames - context_frames``:
-  ``(target_frame_count - clip_frames) // stride + 1 - init_index``
+  ``(target_frames - clip_frames) // stride_frames + 1 - init_index``
   (incremented by one when the remainder branch below keeps a last clip).
-* ``last_clip_frames`` — frame count of the final clip, from
-  ``remainder = (target_frame_count - clip_frames) % stride``:
-  ``stride`` when ``floor(remainder / 17) == 0`` (a remainder below 17
-  frames — including exactly covering the target — means the last clip is a
-  full stride); otherwise
-  ``floor(remainder / 17) * 17 + context_frames`` and ``total_clips`` is
-  incremented by one.
-
-All three values are pure arithmetic on the video's container metadata
-(``get_frame_count`` / ``get_frame_rate``, the same accessors Video Info
-(Lesca) uses — no frame decoding), so the node can be used to drive an
-upstream generation node that works on clip-sized chunks.
-
-The node is an output node (``is_output_node=True``): the graph executes it
-even when nothing is wired to its outputs. On execution it also returns a UI
-output (``{"context_clips": (info,)}``) which makes the backend send an
-``executed`` websocket message; the frontend extension (``web/extension.js``)
-listens for it and fills a read-only text box on the node with the three
-fields, one per line.
+* ``clip_info`` — a dict carrying all intermediate values:
+  ``clip_frames``, ``init_index``, ``total_clips``, ``last_clip_frames``,
+  ``target_frames``.
 
 The math follows the reference formulas from specs.md (goal 7) verbatim:
-``target_frame_count`` is truncated with ``int(...)`` (not rounded), and
+``target_frames`` is truncated with ``int(...)`` (not rounded), and
 ``total_clips`` / ``remainder`` use Python integer ``//`` and ``%`` on the
 already-int target frame count (a short target still keeps a non-negative
 remainder, e.g. ``(120 - 124) % 102 == 98``). The only adaptation:
 ``target_fps = 0`` is interpreted as "use the source fps" (the raw formula
 would yield 0 frames); substituting the source fps yields ``frame_count``.
+
+All of it is pure arithmetic on the video's container metadata
+(``get_frame_count`` / ``get_frame_rate``, the same accessors Video Info
+(Lesca) uses — no frame decoding).
+
+The node is an output node (``is_output_node=True``): the graph executes it
+even when nothing is wired to its outputs. On execution it also returns a UI
+output (``{"context_clips": (info,)}``) which makes the backend send an
+``executed`` websocket message; the frontend extension (``web/extension.js``)
+listens for it and fills a read-only text box on the node with the six fields
+(target_frames, clip_frames, context_frames, stride_frames, total_clips,
+last_clip_frames), one per line.
 """
 
 from __future__ import annotations
@@ -57,13 +50,12 @@ class ContextClipsLesca(io.ComfyNode):
             search_aliases=[
                 "context clips lesca",
                 "clip planning",
-                "target frame count",
                 "total clips",
                 "context frames",
                 "run the train",
                 "minimax h3",
             ],
-            description="For MiniMax H3 action-migration run-the-train long-video generation: slice the video's frame count with a fixed-stride clip window, overlapping slices by context frames to account for the overlap-frame effect of the 'Add Guide' / 'Motion Context' nodes; report the run's total frame count, total clip count and final clip size.",
+            description="For MiniMax H3 action-migration run-the-train long-video generation: slice the video's frame count with a fixed-stride clip window, overlapping slices by context frames to account for the overlap-frame effect of the 'Add Guide' / 'Motion Context' nodes; report the total clip count and a clip_info dict with all intermediate values.",
             is_output_node=True,
             inputs=[
                 io.Video.Input(
@@ -102,16 +94,12 @@ class ContextClipsLesca(io.ComfyNode):
             ],
             outputs=[
                 io.Int.Output(
-                    display_name="target_frame_count",
-                    tooltip="The total frame count the run slices: the video's frame count, or the frame count converted to target fps.",
-                ),
-                io.Int.Output(
                     display_name="total_clips",
                     tooltip="The total number of clips the run-the-train generation needs (already reduced by init index).",
                 ),
-                io.Int.Output(
-                    display_name="last_clip_frames",
-                    tooltip="The frame count the final clip must carry: the tail aligned to the 17n+5 pattern (a multiple of 17 plus context frames, 22 by default); the full stride (clip_frames - context_frames, 102 by default) when the remainder is below 17 frames.",
+                io.Dict.Output(
+                    display_name="clip_info",
+                    tooltip="Dict carrying: clip_frames, init_index, total_clips, last_clip_frames, target_frames.",
                 ),
             ],
         )
@@ -153,28 +141,39 @@ class ContextClipsLesca(io.ComfyNode):
         effective_fps = float(target_fps) if int(target_fps or 0) > 0 else fps
 
         # 1. 计算目标总帧数（避免重复计算）—— int() 截断，非四舍五入
-        target_frame_count = int((frame_count / fps) * effective_fps)
+        target_frames = int((frame_count / fps) * effective_fps)
 
-        # 2. 定义核心步长 (Stride)
-        stride = int(clip_frames) - int(context_frames)
+        # 2. 定义核心步长 (Stride_frames)
+        stride_frames = int(clip_frames) - int(context_frames)
 
         # 3. 总片段数 total_clips（整数 // 整除）
         total_clips = (
-            (target_frame_count - clip_frames) // stride + 1 - init_index
+            (target_frames - clip_frames) // stride_frames + 1 - init_index
         )
 
         # 4. 最后片段帧数 last_clip_frames
-        remainder = (target_frame_count - clip_frames) % stride
+        remainder = (target_frames - clip_frames) % stride_frames
         if math.floor(remainder / 17) == 0:  # remainder < 17
             # last clip is a full stride
-            last_clip_frames = stride
+            last_clip_frames = stride_frames
         else:
             last_clip_frames = math.floor(remainder / 17) * 17 + context_frames
             total_clips += 1
 
+        clip_info = {
+            "clip_frames": clip_frames,
+            "init_index": init_index,
+            "total_clips": total_clips,
+            "last_clip_frames": last_clip_frames,
+            "target_frames": target_frames,
+        }
+
         info = "\n".join(
             [
-                f"target_frame_count: {target_frame_count}",
+                f"target_frames: {target_frames}",
+                f"clip_frames: {clip_frames}",
+                f"context_frames: {context_frames}",
+                f"stride_frames: {stride_frames}",
                 f"total_clips: {total_clips}",
                 f"last_clip_frames: {last_clip_frames}",
             ]
@@ -185,8 +184,7 @@ class ContextClipsLesca(io.ComfyNode):
         # frontend extension turns ``output.context_clips`` into the node's
         # read-only text box.
         return io.NodeOutput(
-            target_frame_count,
             total_clips,
-            last_clip_frames,
+            clip_info,
             ui={"context_clips": (info,)},
         )

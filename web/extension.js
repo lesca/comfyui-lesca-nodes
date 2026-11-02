@@ -20,14 +20,17 @@
 const LOAD_VIDEO_NODE = 'LoadVideoLesca'
 const VIDEO_INFO_NODE = 'VideoInfoLesca'
 const CONTEXT_CLIPS_NODE = 'ContextClipsLesca'
+const CURRENT_CLIP_FRAMES_NODE = 'CurrentClipFramesLesca'
 const VIDEO_WIDGET_NAME = 'lesca-video-preview'
 const BUTTON_NAME = 'Update Preview'
 const VIDEO_INFO_WIDGET_NAME = 'video_info'
 const CONTEXT_CLIPS_WIDGET_NAME = 'context_clips'
+const CURRENT_CLIP_FRAMES_WIDGET_NAME = 'current_clip_frames'
 // Guard so a node is only wired up once (nodeCreated + existing-node pass).
 const WIRED = Symbol.for('lesca.load-video.wired')
 const WIRED_INFO = Symbol.for('lesca.video-info.wired')
 const WIRED_CONTEXT = Symbol.for('lesca.context-clips.wired')
+const WIRED_CURRENT = Symbol.for('lesca.current-clip-frames.wired')
 
 // Diagnostic markers — confirm in the browser console (F12) that the extension
 // is loaded and wired. Remove these lines once the button is verified working.
@@ -211,6 +214,43 @@ const setupContextClipsNode = (node) => {
   }
 }
 
+// Wire up a single Current Clip Frames (Lesca) node instance: add the read-only
+// text box that shows the current_clip_frames value produced by the last run.
+// Same mechanism as Video Info / Context Clips: the node returns
+// ui={"current_clip_frames": (info,)} so the backend sends an `executed`
+// websocket message, and node.onExecuted(output) fills the box from
+// output.current_clip_frames.
+const setupCurrentClipFramesNode = (node) => {
+  if (!isNode(node, CURRENT_CLIP_FRAMES_NODE) || node[WIRED_CURRENT]) return
+  node[WIRED_CURRENT] = true
+  log('wiring current clip frames node', node.id, 'type=', node.type, 'comfyClass=', node.comfyClass)
+
+  const ta = document.createElement('textarea')
+  ta.readOnly = true
+  ta.spellcheck = false
+  ta.value = ''
+  ta.placeholder = '运行节点后在此显示 current_clip_frames'
+  ta.style.cssText =
+    'width:100%;box-sizing:border-box;min-height:60px;resize:none;' +
+    'background:rgba(0,0,0,.35);color:#ccc;border:1px solid #555;' +
+    'border-radius:4px;padding:6px;outline:none;' +
+    "font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace"
+
+  node.addDOMWidget(CURRENT_CLIP_FRAMES_WIDGET_NAME, 'textarea', ta, {
+    serialize: false,
+    hideOnZoom: false,
+    getMinHeight: () => 60,
+    surfaces: { canvas: 'shown', vueNode: 'never', panel: 'never' }
+  })
+
+  const prev = node.onExecuted
+  node.onExecuted = (output) => {
+    prev?.call(node, output)
+    const v = output?.current_clip_frames
+    ta.value = Array.isArray(v) ? v.join('\n\n') : String(v ?? '')
+  }
+}
+
 const register = () => {
   const app = window.app
   if (!app) return false
@@ -232,6 +272,12 @@ const register = () => {
       if (isNode(node, CONTEXT_CLIPS_NODE)) setupContextClipsNode(node)
     }
   })
+  app.registerExtension({
+    name: 'Lesca.CurrentClipFramesDisplay',
+    nodeCreated: (node) => {
+      if (isNode(node, CURRENT_CLIP_FRAMES_NODE)) setupCurrentClipFramesNode(node)
+    }
+  })
   log('extension registered')
   // Nodes that already exist (restored before this extension registered) won't
   // fire nodeCreated again — wire them up explicitly. window.graph is assigned
@@ -244,6 +290,7 @@ const register = () => {
       if (isNode(n, LOAD_VIDEO_NODE)) { setupNode(n); count++ }
       if (isNode(n, VIDEO_INFO_NODE)) { setupVideoInfoNode(n); count++ }
       if (isNode(n, CONTEXT_CLIPS_NODE)) { setupContextClipsNode(n); count++ }
+      if (isNode(n, CURRENT_CLIP_FRAMES_NODE)) { setupCurrentClipFramesNode(n); count++ }
     }
     log('existing nodes wired:', count, 'total nodes:', graph._nodes.length)
     return count > 0
