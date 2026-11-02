@@ -129,7 +129,7 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
   * init_index: int 类型。默认 0.
 * 输出：
   * total_clips: int 类型。目标视频的总片段数。计算方法参考下面的代码。
-  * clip_info: dict类型，包含: clip_frames, init_index, total_clips, last_clip_frames, target_frames
+  * clip_info: dict类型，包含: clip_frames, init_index, total_clips, last_clip_frames, target_frames, context_frames
 
 ```python
 import math
@@ -160,23 +160,26 @@ else:
 * 该节点是输出节点（is_output_node=True）：即使没有连接任何下游节点，Queue 也会执行它。
 * 节点运行后，把字段(target_frames, clip_frames, context_frames, stride_frames, total_clips, last_clip_frames)的内容在节点自带的只读文本框中显示，每个字段一行。（前端附加的多行文本框，未运行时显示占位提示）。
 
-## 目标 8: Current Clip Frames (Lesca) 节点
+## 目标 8: Current Clip (Lesca) 节点
 
 Context Clips (Lesca) 节点的下游节点。根据当前index判断当前片段是否为最后一个clip。如果为最后一个clip则使用上游节点计算的 last_clip_frames 作为当前clip所需的帧数。通过使用本节点可以简化 workflow 连线，解决Context Clips (Lesca) 节点直接输出 last_clip_frames 导致 "The workflow has a circular node connection" 的问题。
 
 * 输入:
   * clip_info: dict类型。接收来自 Context Clips (Lesca) 节点 的 clip_info
-  * index: Int 类型，默认0
+  * index: Int 类型，默认0。当前clip的index。
+  * skip_frames_base: Int 类型，默认0。用户输入的需要跳过的帧数。
 * 输出:
   * current_clip_frames: Int 类型。根据clip_info和index计算当前index对应的clip所需的帧数。计算方式见下面的代码。
+  * skip_frames: Int 类型。根据clip_info和index计算当前index对应的clip所需跳过的帧数。计算方式见下面的代码。
 
 ```python
 current_clip_frames = clip_frames if index - init_index + 1 < total_clips else last_clip_frames
+skip_frames = index * clip_frames + skip_frames_base - context_frames * index
 ```
 
 要求：
 * 该节点是输出节点（is_output_node=True）：即使没有连接任何下游节点，Queue 也会执行它。
-* 节点运行后，把字段(current_clip_frames)的内容在节点自带的只读文本框中显示。（前端附加的多行文本框，未运行时显示占位提示）。
+* 节点运行后，把输出字段的内容在节点自带的只读文本框中显示（一行一个字段）。（前端附加的多行文本框，未运行时显示占位提示）。
 
 ## 对你可能有帮助的参考资料
 

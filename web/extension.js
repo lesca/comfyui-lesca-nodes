@@ -20,17 +20,17 @@
 const LOAD_VIDEO_NODE = 'LoadVideoLesca'
 const VIDEO_INFO_NODE = 'VideoInfoLesca'
 const CONTEXT_CLIPS_NODE = 'ContextClipsLesca'
-const CURRENT_CLIP_FRAMES_NODE = 'CurrentClipFramesLesca'
+const CURRENT_CLIP_NODE = 'CurrentClipLesca'
 const VIDEO_WIDGET_NAME = 'lesca-video-preview'
 const BUTTON_NAME = 'Update Preview'
 const VIDEO_INFO_WIDGET_NAME = 'video_info'
 const CONTEXT_CLIPS_WIDGET_NAME = 'context_clips'
-const CURRENT_CLIP_FRAMES_WIDGET_NAME = 'current_clip_frames'
+const CURRENT_CLIP_WIDGET_NAME = 'current_clip'
 // Guard so a node is only wired up once (nodeCreated + existing-node pass).
 const WIRED = Symbol.for('lesca.load-video.wired')
 const WIRED_INFO = Symbol.for('lesca.video-info.wired')
 const WIRED_CONTEXT = Symbol.for('lesca.context-clips.wired')
-const WIRED_CURRENT = Symbol.for('lesca.current-clip-frames.wired')
+const WIRED_CURRENT = Symbol.for('lesca.current-clip.wired')
 
 // Diagnostic markers — confirm in the browser console (F12) that the extension
 // is loaded and wired. Remove these lines once the button is verified working.
@@ -214,29 +214,29 @@ const setupContextClipsNode = (node) => {
   }
 }
 
-// Wire up a single Current Clip Frames (Lesca) node instance: add the read-only
-// text box that shows the current_clip_frames value produced by the last run.
-// Same mechanism as Video Info / Context Clips: the node returns
-// ui={"current_clip_frames": (info,)} so the backend sends an `executed`
-// websocket message, and node.onExecuted(output) fills the box from
-// output.current_clip_frames.
-const setupCurrentClipFramesNode = (node) => {
-  if (!isNode(node, CURRENT_CLIP_FRAMES_NODE) || node[WIRED_CURRENT]) return
+// Wire up a single Current Clip (Lesca) node instance: add the read-only
+// text box that shows the current_clip_frames and skip_frames values produced
+// by the last run, one per line. Same mechanism as Video Info / Context Clips:
+// the node returns ui={"current_clip": (info,)} so the backend sends an
+// `executed` websocket message, and node.onExecuted(output) fills the box from
+// output.current_clip.
+const setupCurrentClipNode = (node) => {
+  if (!isNode(node, CURRENT_CLIP_NODE) || node[WIRED_CURRENT]) return
   node[WIRED_CURRENT] = true
-  log('wiring current clip frames node', node.id, 'type=', node.type, 'comfyClass=', node.comfyClass)
+  log('wiring current clip node', node.id, 'type=', node.type, 'comfyClass=', node.comfyClass)
 
   const ta = document.createElement('textarea')
   ta.readOnly = true
   ta.spellcheck = false
   ta.value = ''
-  ta.placeholder = '运行节点后在此显示 current_clip_frames'
+  ta.placeholder = '运行节点后在此显示 current_clip 输出'
   ta.style.cssText =
     'width:100%;box-sizing:border-box;min-height:60px;resize:none;' +
     'background:rgba(0,0,0,.35);color:#ccc;border:1px solid #555;' +
     'border-radius:4px;padding:6px;outline:none;' +
     "font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace"
 
-  node.addDOMWidget(CURRENT_CLIP_FRAMES_WIDGET_NAME, 'textarea', ta, {
+  node.addDOMWidget(CURRENT_CLIP_WIDGET_NAME, 'textarea', ta, {
     serialize: false,
     hideOnZoom: false,
     getMinHeight: () => 60,
@@ -246,7 +246,7 @@ const setupCurrentClipFramesNode = (node) => {
   const prev = node.onExecuted
   node.onExecuted = (output) => {
     prev?.call(node, output)
-    const v = output?.current_clip_frames
+    const v = output?.current_clip
     ta.value = Array.isArray(v) ? v.join('\n\n') : String(v ?? '')
   }
 }
@@ -273,9 +273,9 @@ const register = () => {
     }
   })
   app.registerExtension({
-    name: 'Lesca.CurrentClipFramesDisplay',
+    name: 'Lesca.CurrentClipDisplay',
     nodeCreated: (node) => {
-      if (isNode(node, CURRENT_CLIP_FRAMES_NODE)) setupCurrentClipFramesNode(node)
+      if (isNode(node, CURRENT_CLIP_NODE)) setupCurrentClipNode(node)
     }
   })
   log('extension registered')
@@ -290,7 +290,7 @@ const register = () => {
       if (isNode(n, LOAD_VIDEO_NODE)) { setupNode(n); count++ }
       if (isNode(n, VIDEO_INFO_NODE)) { setupVideoInfoNode(n); count++ }
       if (isNode(n, CONTEXT_CLIPS_NODE)) { setupContextClipsNode(n); count++ }
-      if (isNode(n, CURRENT_CLIP_FRAMES_NODE)) { setupCurrentClipFramesNode(n); count++ }
+      if (isNode(n, CURRENT_CLIP_NODE)) { setupCurrentClipNode(n); count++ }
     }
     log('existing nodes wired:', count, 'total nodes:', graph._nodes.length)
     return count > 0

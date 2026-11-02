@@ -10,7 +10,7 @@ pipeline should cover the target length:
   (incremented by one when the remainder branch below keeps a last clip).
 * ``clip_info`` — a dict carrying all intermediate values:
   ``clip_frames``, ``init_index``, ``total_clips``, ``last_clip_frames``,
-  ``target_frames``.
+  ``target_frames``, ``context_frames``.
 
 The math follows the reference formulas from specs.md (goal 7) verbatim:
 ``target_frames`` is truncated with ``int(...)`` (not rounded), and
@@ -99,7 +99,7 @@ class ContextClipsLesca(io.ComfyNode):
                 ),
                 io.Dict.Output(
                     display_name="clip_info",
-                    tooltip="Dict carrying: clip_frames, init_index, total_clips, last_clip_frames, target_frames.",
+                    tooltip="Dict carrying: clip_frames, init_index, total_clips, last_clip_frames, target_frames, context_frames.",
                 ),
             ],
         )
@@ -166,6 +166,7 @@ class ContextClipsLesca(io.ComfyNode):
             "total_clips": total_clips,
             "last_clip_frames": last_clip_frames,
             "target_frames": target_frames,
+            "context_frames": context_frames,
         }
 
         info = "\n".join(

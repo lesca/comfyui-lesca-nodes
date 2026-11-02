@@ -7,7 +7,7 @@ Lesca 的自定义 ComfyUI 节点。
 目前提供 **Load Video (Lesca)**、**Save Video (Lesca)**、**Video Info
 (Lesca)**、**Video to Images (Lesca)**、**Video Combine (Lesca)**、
 **Video Add Noise (Lesca)**、**Context Clips (Lesca)** 和
-**Current Clip Frames (Lesca)** 八个节点。
+**Current Clip (Lesca)** 八个节点。
 
 ## 节点功能一览
 
@@ -19,8 +19,8 @@ Lesca 的自定义 ComfyUI 节点。
 | [Video to Images (Lesca)](#video-to-images-lesca) | 把视频解码成一批图片帧 | force-rate → trim → frame-cap → resize 管线；窗口化解码（不全量解码）；音频区间随导出帧同步裁剪 |
 | [Video Combine (Lesca)](#video-combine-lesca) | 把目录中所有同前缀的视频文件合并成一个 | 任意上游输出触发；始终经 concat filter 重编码、接缝干净；自动排除已合并产物；按源文件指纹做执行缓存 |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | 截取头部/尾部一段帧，添加互相独立的逐帧噪声 | 分层强度调度（`frame_num_list` / `strenth_list`）；可选 seed 复现逐帧噪声；短视频钳制 |
-| [Context Clips (Lesca)](#context-clips-lesca) | 适用于 MiniMax H3 动作迁移类跑火车长视频生成：固定步长 `clip_frames` 切片、`context_frames` 重叠（考虑 "Add Guide" / "Motion Context" 节点产生的重叠帧影响） | 由 `frame_count` + `fps` 算出 `total_clips`（int）+ `clip_info` dict（`clip_frames`、`init_index`、`total_clips`、`last_clip_frames`、`target_frames`）；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
-| [Current Clip Frames (Lesca)](#current-clip-frames-lesca) | 根据 Context Clips (Lesca) 的 `clip_info` 和片段索引，解析该片段所需的帧数 | 非末片段返回 `clip_frames`，末片段返回 `last_clip_frames`；避免直接连线 `last_clip_frames` 导致的循环连接错误；输出节点，可单独运行 |
+| [Context Clips (Lesca)](#context-clips-lesca) | 适用于 MiniMax H3 动作迁移类跑火车长视频生成：固定步长 `clip_frames` 切片、`context_frames` 重叠（考虑 "Add Guide" / "Motion Context" 节点产生的重叠帧影响） | 由 `frame_count` + `fps` 算出 `total_clips`（int）+ `clip_info` dict（`clip_frames`、`init_index`、`total_clips`、`last_clip_frames`、`target_frames`、`context_frames`）；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
+| [Current Clip (Lesca)](#current-clip-lesca) | 根据 Context Clips (Lesca) 的 `clip_info` 和片段索引，解析该片段所需的帧数和跳过帧数 | 非末片段返回 `clip_frames`，末片段返回 `last_clip_frames`；`skip_frames` 计算需要跳过的帧数；避免直接连线 `last_clip_frames` 导致的循环连接错误；输出节点，可单独运行 |
 
 ## Load Video (Lesca)
 
@@ -306,7 +306,7 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `total_clips` | `Int` | 跑火车生成所需的总片段数（已减去 `init_index`）。 |
-| `clip_info` | `Dict` | 包含：`clip_frames`（int）、`init_index`（int）、`total_clips`（int）、`last_clip_frames`（int）、`target_frames`（int）。 |
+| `clip_info` | `Dict` | 包含：`clip_frames`（int）、`init_index`（int）、`total_clips`（int）、`last_clip_frames`（int）、`target_frames`（int）、`context_frames`（int）。 |
 
 ### 行为
 
@@ -317,13 +317,17 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
   文本框，未运行时显示占位提示）：`target_frames`、`clip_frames`、
   `context_frames`、`stride_frames`、`total_clips`、`last_clip_frames`。
 
-## Current Clip Frames (Lesca)
+## Current Clip (Lesca)
 
 Context Clips (Lesca) 的下游节点。根据 `clip_info` 字典和当前片段索引 `index`，
-解析该片段所需的帧数：非末片段返回 `clip_frames`，末片段返回 `last_clip_frames`。
+解析该片段所需的帧数和跳过帧数：
+
+* `current_clip_frames` — 非末片段返回 `clip_frames`，末片段返回 `last_clip_frames`。
+* `skip_frames` — 该片段前需要跳过的帧数。
 
 ```python
 current_clip_frames = clip_frames if index - init_index + 1 < total_clips else last_clip_frames
+skip_frames = index * clip_frames + skip_frames_base - context_frames * index
 ```
 
 通过使用本节点可以简化 workflow 连线，解决 Context Clips (Lesca) 节点直接输出
@@ -336,16 +340,18 @@ current_clip_frames = clip_frames if index - init_index + 1 < total_clips else l
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `clip_info` | `Dict` | 来自 Context Clips (Lesca) 的 `clip_info` 字典，包含 `clip_frames`、`init_index`、`total_clips`、`last_clip_frames`、`target_frames`。 |
+| `clip_info` | `Dict` | 来自 Context Clips (Lesca) 的 `clip_info` 字典，包含 `clip_frames`、`init_index`、`total_clips`、`last_clip_frames`、`target_frames`、`context_frames`。 |
 | `index` | `Int` | 当前片段索引（0 起，与 `init_index` 一致）。默认 `0`。 |
+| `skip_frames_base` | `Int` | 用户输入的需要跳过的帧数。默认 `0`。 |
 
 ### 输出
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `current_clip_frames` | `Int` | 当前索引对应的片段所需帧数：非末片段为 `clip_frames`，末片段为 `last_clip_frames`。 |
+| `skip_frames` | `Int` | 当前片段前需要跳过的帧数。计算公式：`index * clip_frames + skip_frames_base - context_frames * index`。 |
 
-运行后，节点把 `current_clip_frames` 的值显示在节点自带的只读文本框中（前端
+运行后，节点把两个输出字段各占一行显示在节点自带的只读文本框中（前端
 附加的多行文本框，未运行时显示占位提示）。
 
 ## 安装
@@ -378,11 +384,12 @@ ComfyUI/custom_nodes/comfyui-lesca-nodes/
   `as_trimmed` 窗口、独立的逐帧噪声与分层强度调度、可选 seed、短视频钳制）。
 * `lesca_context_clips.py` — Context Clips 节点（由容器元数据算出总片段数 +
   clip_info 字典；`target_fps = 0` 保持源帧率；输出节点，带只读文本框）。
-* `lesca_current_clip_frames.py` — Current Clip Frames 节点（根据 clip_info
-  字典和片段索引解析该片段所需帧数：非末片段 `clip_frames`，末片段
-  `last_clip_frames`；输出节点，带只读文本框）。
+* `lesca_current_clip.py` — Current Clip 节点（根据 clip_info 字典和片段索引
+  解析该片段所需帧数和跳过帧数：非末片段 `clip_frames`，末片段
+  `last_clip_frames`；`skip_frames` 由 index、clip_frames、skip_frames_base
+  和 context_frames 计算得出；输出节点，带只读文本框显示两个字段）。
 * `web/extension.js` — 自定义前端：Load Video 的 **Update** 按钮 + 实时预览，
-  以及 Video Info、Context Clips 与 Current Clip Frames 节点的只读文本框。
+  以及 Video Info、Context Clips 与 Current Clip 节点的只读文本框。
 * `pyproject.toml` — ComfyUI 自定义节点管理器用的元数据（`[tool.comfyui] web =
   "web"` 负责挂载前端）。
 * `specs.md` — 原始需求规格（目标 1–8，中文）。

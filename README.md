@@ -7,7 +7,7 @@ Custom ComfyUI nodes for Lesca.
 Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 **Video Info (Lesca)**, **Video to Images (Lesca)**, **Video Combine
 (Lesca)**, **Video Add Noise (Lesca)**, **Context Clips (Lesca)** and
-**Current Clip Frames (Lesca)**.
+**Current Clip (Lesca)**.
 
 ## Node Overview
 
@@ -19,8 +19,8 @@ Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 | [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); audio span sliced to match the exported frames |
 | [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in a directory into one file | Triggered by any upstream output; always re-encodes through the concat filter for a clean audio seam; previous merge outputs self-excluded from the scan; execution cache keyed by the source-file fingerprint |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | Cuts a head/tail block of frames and adds independent per-frame noise | Per-layer strength schedule (`frame_num_list` / `strenth_list`); optional seed for reproducible per-frame noise; short-video clamp |
-| [Context Clips (Lesca)](#context-clips-lesca) | For MiniMax H3 action-migration "run-the-train" long-video generation: slice `frame_count` with a fixed-stride `clip_frames`, overlapping slices by `context_frames` to account for the overlap-frame effect produced by the "Add Guide" / "Motion Context" nodes | `total_clips` (int) + `clip_info` dict (`clip_frames`, `init_index`, `total_clips`, `last_clip_frames`, `target_frames`) from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
-| [Current Clip Frames (Lesca)](#current-clip-frames-lesca) | Resolves the frame count a clip at a given index must carry, from the `clip_info` dict produced by Context Clips (Lesca) | `clip_frames` for non-final clips, `last_clip_frames` for the final clip; avoids the circular-node-connection error when wiring `last_clip_frames` directly; output node, runs standalone |
+| [Context Clips (Lesca)](#context-clips-lesca) | For MiniMax H3 action-migration "run-the-train" long-video generation: slice `frame_count` with a fixed-stride `clip_frames`, overlapping slices by `context_frames` to account for the overlap-frame effect produced by the "Add Guide" / "Motion Context" nodes | `total_clips` (int) + `clip_info` dict (`clip_frames`, `init_index`, `total_clips`, `last_clip_frames`, `target_frames`, `context_frames`) from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
+| [Current Clip (Lesca)](#current-clip-lesca) | Resolves the frame count and skip count for a clip at a given index, from the `clip_info` dict produced by Context Clips (Lesca) | `current_clip_frames` (`clip_frames` for non-final clips, `last_clip_frames` for the final clip) + `skip_frames` (frames to skip before this clip); avoids the circular-node-connection error when wiring `last_clip_frames` directly; output node, runs standalone |
 
 ## Load Video (Lesca)
 
@@ -353,7 +353,7 @@ its outputs.
 | Field | Type | Meaning |
 |-------|------|---------|
 | `total_clips` | `Int` | The total number of clips the run-the-train generation needs (already reduced by `init_index`). |
-| `clip_info` | `Dict` | Carries: `clip_frames` (int), `init_index` (int), `total_clips` (int), `last_clip_frames` (int), `target_frames` (int). |
+| `clip_info` | `Dict` | Carries: `clip_frames` (int), `init_index` (int), `total_clips` (int), `last_clip_frames` (int), `target_frames` (int), `context_frames` (int). |
 
 ### Behavior
 
@@ -367,15 +367,18 @@ its outputs.
   before the first run): `target_frames`, `clip_frames`, `context_frames`,
   `stride_frames`, `total_clips`, `last_clip_frames`.
 
-## Current Clip Frames (Lesca)
+## Current Clip (Lesca)
 
 A downstream node of Context Clips (Lesca). Given the `clip_info` dict from
-Context Clips (Lesca) and a clip `index`, it resolves the frame count that clip
-must carry: `clip_frames` for all non-final clips, `last_clip_frames` for the
-final clip.
+Context Clips (Lesca) and a clip `index`, it resolves two values for that clip:
+
+* `current_clip_frames` — the frame count the clip must carry: `clip_frames`
+  for all non-final clips, `last_clip_frames` for the final clip.
+* `skip_frames` — the number of frames to skip before this clip.
 
 ```python
 current_clip_frames = clip_frames if index - init_index + 1 < total_clips else last_clip_frames
+skip_frames = index * clip_frames + skip_frames_base - context_frames * index
 ```
 
 Using this node simplifies workflow wiring: instead of wiring `last_clip_frames`
@@ -384,23 +387,26 @@ generation node also feeds back into the clip-size input), you wire the
 `clip_info` dict into this node and pass the clip index.
 
 The node is an **output node** (`is_output_node=True`), so the graph executes it
-even when nothing is wired to its output.
+even when nothing is wired to its outputs.
 
 ### Inputs
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `clip_info` | `Dict` | The `clip_info` dict produced by Context Clips (Lesca), carrying `clip_frames`, `init_index`, `total_clips`, `last_clip_frames`, `target_frames`. |
+| `clip_info` | `Dict` | The `clip_info` dict produced by Context Clips (Lesca), carrying `clip_frames`, `init_index`, `total_clips`, `last_clip_frames`, `target_frames`, `context_frames`. |
 | `index` | `Int` | The clip index to resolve (0-based, matching `init_index`). Default `0`. |
+| `skip_frames_base` | `Int` | The base number of frames to skip. Default `0`. |
 
-### Output
+### Outputs
 
 | Field | Type | Meaning |
 |-------|------|---------|
 | `current_clip_frames` | `Int` | The frame count the clip at the given index must carry: `clip_frames` for all non-final clips, `last_clip_frames` for the final clip. |
+| `skip_frames` | `Int` | The number of frames to skip before the clip at this index. Computed as `index * clip_frames + skip_frames_base - context_frames * index`. |
 
-After a run the node shows `current_clip_frames` in a read-only text box on the
-node (a frontend-appended widget; a placeholder is shown before the first run).
+After a run the node shows both output fields, one per line, in a read-only
+text box on the node (a frontend-appended widget; a placeholder is shown before
+the first run).
 
 ## Installation
 
@@ -438,13 +444,14 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
 * `lesca_context_clips.py` — Context Clips node (total clips + clip_info dict
   computed from container metadata; `target_fps = 0` keeps the source rate;
   output node with a read-only text box).
-* `lesca_current_clip_frames.py` — Current Clip Frames node (resolves the frame
+* `lesca_current_clip.py` — Current Clip node (resolves the frame count and skip
   count for a clip at a given index from the clip_info dict; `clip_frames` for
-  non-final clips, `last_clip_frames` for the final clip; output node with a
-  read-only text box).
+  non-final clips, `last_clip_frames` for the final clip; `skip_frames` computed
+  from index, clip_frames, skip_frames_base and context_frames; output node with
+  a read-only text box showing both fields).
 * `web/extension.js` — custom frontend: Load Video's **Update** button + live
   preview, and read-only text boxes for the Video Info, Context Clips and
-  Current Clip Frames nodes.
+  Current Clip nodes.
 * `pyproject.toml` — node metadata for the ComfyUI custom-node manager
   (`[tool.comfyui] web = "web"` serves the frontend).
 * `specs.md` — the original requirement spec (goals 1–8, Chinese).
