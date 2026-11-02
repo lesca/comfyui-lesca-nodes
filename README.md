@@ -17,7 +17,7 @@ Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 | [Save Video (Lesca)](#save-video-lesca) | Merges the built-in `Create Video` + `Save Video` into a single node | User-specified save path (no `_000001_` counter suffix); frame + audio trimming; trimmed `images` / `audio` passed through as outputs |
 | [Video Info (Lesca)](#video-info-lesca) | Reports a video's properties as individual outputs, for workflow branching | `fps` / `bit_depth` / `color_space` / `width` / `height` / `frame_count`, plus a one-per-line `video_info` string; output node, runs standalone |
 | [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); audio span sliced to match the exported frames |
-| [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in a directory into one file | Triggered by any upstream output; always re-encodes through the concat filter for a clean audio seam; previous merge outputs self-excluded from the scan; execution cache keyed by the source-file fingerprint |
+| [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in the `folder/prefix` directory into one file | Triggered by any upstream output; clips merge in natural clip-suffix-number order (clip0, clip1, …, clip10); always re-encodes through the concat filter for a clean audio seam — or video-only, when an optional external video's audio (with `skip_frames` leading frames dropped) replaces the clips' audio and is trimmed to the video's length; previous merge outputs self-excluded; execution cache keyed by the source-file fingerprint |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | Cuts a head/tail block of frames and adds independent per-frame noise | Per-layer strength schedule (`frame_num_list` / `strenth_list`); optional seed for reproducible per-frame noise; short-video clamp |
 | [Context Clips (Lesca)](#context-clips-lesca) | For MiniMax H3 action-migration "run-the-train" long-video generation: slice `frame_count` with a fixed-stride `clip_frames`, overlapping slices by `context_frames` to account for the overlap-frame effect produced by the "Add Guide" / "Motion Context" nodes | `total_clips` (int) + `clip_info` dict (`clip_frames`, `init_index`, `total_clips`, `last_clip_frames`, `target_frames`, `context_frames`) from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
 | [Current Clip (Lesca)](#current-clip-lesca) | Resolves the frame count and skip count for a clip at a given index, from the `clip_info` dict produced by Context Clips (Lesca) | `current_clip_frames` (`clip_frames` for non-final clips, `last_clip_frames` for the final clip) + `skip_frames` (frames to skip before this clip); avoids the circular-node-connection error when wiring `last_clip_frames` directly; output node, runs standalone |
@@ -223,7 +223,7 @@ same index map to the loaded tensors; both paths produce identical frames.
 
 ## Video Combine (Lesca)
 
-Merges every same-prefix video file in a directory into one file, driven by a
+Merges every same-prefix video file in the `folder/prefix` directory into one file, driven by a
 trigger from any upstream output — e.g. wire the `filename` output of Save
 Video (Lesca) into this node and every newly saved clip triggers a merge of the
 directory it was saved into.
@@ -233,27 +233,30 @@ directory it was saved into.
 | Field    | Type | Meaning |
 |----------|------|---------|
 | `any`    | `Any` (optional) | A trigger: the output of **any** upstream type starts the node's run (e.g. `Save Video (Lesca)`'s `filename`, which fires the merge right after a new clip is saved). Optional — the node also runs standalone. |
-| `folder` | `String` | The directory to scan, e.g. `output/video` (the default). A relative path resolves against the ComfyUI **root** directory; an absolute path is used as-is. May be connected to a string-producing node. |
-| `prefix` | `String` | The filename prefix of the clips to merge, e.g. `dance`. May be connected to a string-producing node. |
+| `folder` | `String` | The base directory; the node walks the `folder/prefix` subdirectory and writes the merged file there, e.g. `output/video` (the default). A relative path resolves against the ComfyUI **root** directory; an absolute path is used as-is. May be connected to a string-producing node. |
+| `prefix` | `String` | The subdirectory under `folder` to walk, and where the merged file is written; clips inside must start with this name, e.g. `dance`. Clips merge in ascending clip-suffix-number order. May be connected to a string-producing node. |
+| `video`  | `Video` (optional) | An external video whose audio **replaces** the merged clips' audio: its soundtrack is stripped (with the first `skip_frames` frames removed) and becomes the merged video's audio, trimmed to the merged video's length if it runs longer. Leave empty to keep the clips' own (re-encoded) audio. |
+| `skip_frames` | `Int` (default `0`) | Number of frames to drop from the provided `video` before stripping its audio — the audio after those frames becomes the soundtrack. Ignored when `video` is empty. |
 
 ### Output
 
 | Field      | Type     | Meaning |
 |------------|----------|---------|
-| `filename` | `String` | Absolute path of the merged video file, e.g. `/…/output/video/dance_merged-2026_10_18_16_33_44.mp4`. |
+| `filename` | `String` | Absolute path of the merged video file, e.g. `/…/output/video/dance/dance_merged-2026_10_18_16_33_44.mp4`. |
 
 ### Behavior
 
-* The node walks `folder`, keeps every **video** file whose name starts with
+* The node walks `folder/prefix`, keeps every **video** file whose name starts with
   `prefix` (non-video files such as `.txt` are skipped by ComfyUI's
-  video-content-type filter), sorts them by **ascending filename**, and
-  concatenates them into one `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` in the
-  same directory.
+  video-content-type filter), sorts them by **ascending clip-suffix number**
+  (natural order, so `clip0, clip1, …, clip10, clip11` merge in the right
+  sequence rather than lexicographically), and concatenates them into one
+  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` in that same `folder/prefix` directory.
 * Previously produced `<prefix>_merged-…mp4` outputs are **excluded from the
   scan**, so running the node on the same directory again merges the original
   clips, never an already-merged file.
-* Merge strategy: every merge is a **concat-filter re-encode** into one fresh
-  H.264 + AAC file — the stream-copy path was dropped because the concat
+* **No external `video`** — the merge is a **concat-filter re-encode** into one
+  fresh H.264 + AAC file. The stream-copy path was dropped because the concat
   demuxer's `-c copy` duplicates the last AAC frame at each splice whenever a
   clip's audio length is not a whole number of AAC frames, which shows up as an
   audible dropout and repeat at the seam. The re-encode normalises each input's
@@ -265,6 +268,15 @@ directory it was saved into.
   excess AAC padding adds no extra frame and the splice stays clean. The command
   line is built directly and run with `subprocess` — the `ffmpeg` **and**
   `ffprobe` binaries must be on PATH (checked up front).
+* **With an external `video`** — the clips are first merged **video-only**
+  (the clean-splice re-encode above, minus the audio) so the soon-to-be-discarded
+  clip audio is never encoded. The node then strips the audio from `video` with
+  `ffmpeg`, dropping its first `skip_frames` frames (`-ss skip_frames/fps`) and
+  re-encoding the rest to AAC; a `video` with no audio track raises a clear
+  error. That soundtrack is muxed onto the merged video with the video stream
+  copied, and trimmed to the merged video's duration when the audio runs longer
+  (the video is the length bound). A provided `video` also feeds the execution
+  cache fingerprint, so a changed video invalidates the cached output.
 * The node is an output node: queueing the graph executes it even when nothing
   is wired to its `filename` output.
 * Execution caching is keyed by a fingerprint of the matched source files'
@@ -434,10 +446,12 @@ Then restart ComfyUI. The nodes register through ComfyUI's V3
   color space / width / height / frame count).
 * `lesca_video_to_images.py` — Video to Images node (windowed decode,
   force-rate → trim → frame-cap → resize pipeline, audio span slicing).
-* `lesca_video_combine.py` — Video Combine node (prefix-scan in ascending
-  filename order, `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` output with
-  self-exclusion on re-runs, always a concat-filter re-encode for a clean audio
-  seam, source-set execution-cache fingerprint).
+* `lesca_video_combine.py` — Video Combine node (folder/prefix prefix-scan in natural
+  clip-suffix-number order, `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` output with
+  self-exclusion on re-runs; concat-filter re-encode for a clean audio seam, or a
+   video-only merge when an optional external `video`'s audio (skip_frames frames
+   dropped) replaces the clips' audio and is trimmed to the video's length,
+  source-set execution-cache fingerprint).
 * `lesca_video_add_noise.py` — Video Add Noise node (head/tail frame cut via
   the lazy `as_trimmed` window, independent per-frame noise with a per-layer
   strength schedule, optional seed, short-video clamp).

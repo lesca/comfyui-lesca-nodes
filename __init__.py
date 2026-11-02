@@ -19,9 +19,9 @@ Eight nodes are registered:
   a reconstructed video sharing the same tensors (the exported frame count is
   available via the Video Info (Lesca) node's ``frame_count``).
 * ``VideoCombineLesca`` — Video Combine (Lesca), concatenates every same-prefix
-  video file in a directory (ascending filename order, previously merged
+  video file in a directory (natural clip-suffix-number order, previously merged
   ``<prefix>_merged-*.mp4`` outputs ignored) into one merged video file via the
-  ffmpeg CLI (stream copy, with a re-encode fallback for incompatible streams);
+  ffmpeg CLI — a concat-filter re-encode for a clean audio seam when no external `video` is given, or a video-only merge whose audio is replaced by the audio stripped from an optional `video` input (`skip_frames` leading frames dropped) and trimmed to the video's length;
   an arbitrary upstream output serves as a trigger for the run.
 * ``VideoAddNoiseLesca`` — Video Add Noise (Lesca), cuts a head/tail block of
   frames from a video and adds independent per-frame Gaussian noise with a

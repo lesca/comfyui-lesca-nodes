@@ -1,11 +1,11 @@
 """Video Combine (Lesca) — merge same-prefix videos in a directory into one file.
 
-Scans a directory for every video file whose name starts with a given prefix
-(in ascending filename order) and concatenates them into a single
-``<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4`` written back into the same
-directory. Previously produced ``<prefix>_merged-<timestamp>.mp4`` outputs are
-ignored on re-runs, so executing the node again never merges an already-merged
-file (specs goal 5 requirement).
+Walks ``folder/prefix`` (the ``prefix`` subdirectory under ``folder``) for every
+video file whose name starts with ``prefix`` (in ascending clip-suffix-number
+order) and concatenates them into a single ``<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4``
+written back into that same ``folder/prefix`` directory. Previously produced
+``<prefix>_merged-<timestamp>.mp4`` outputs are ignored on re-runs, so executing
+the node again never merges an already-merged file (specs goal 5 requirement).
 
 Inputs:
 
@@ -14,13 +14,14 @@ Inputs:
   right after a new clip was saved). Optional, so the node also runs
   standalone; the node is an output node, so queueing the graph executes it
   even when nothing is wired to its ``filename`` output.
-* ``folder`` — the directory to scan. A relative path resolves against the
-  ComfyUI root directory (``folder_paths.base_path``), like the other Lesca
-  nodes; an absolute path is used as-is. May be connected to a
-  string-producing node.
-* ``prefix`` — the filename prefix of the clips to merge, e.g. ``dance`` merges
-  ``dance_clip0.mp4``, ``dance_clip1.mp4``, ... May be connected to a
-  string-producing node.
+* ``folder`` — the base directory; the node actually walks the ``folder/prefix``
+  subdirectory. A relative path resolves against the ComfyUI root directory
+  (``folder_paths.base_path``), like the other Lesca nodes; an absolute path is
+  used as-is. May be connected to a string-producing node.
+* ``prefix`` — the subdirectory under ``folder`` to walk, and where the merged
+  file is written; clips inside must start with this name. E.g. ``dance`` walks
+  ``folder/dance`` and merges ``dance_clip0.mp4``, ``dance_clip1.mp4``, ... in
+  ascending clip-suffix-number order. May be connected to a string-producing node.
 
 Output:
 
@@ -51,10 +52,11 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 
 import folder_paths
-from comfy_api.latest import io
+from comfy_api.latest import io, VideoInput
 
 
 def _resolved_folder(folder: str) -> str:
@@ -89,6 +91,32 @@ def _resolved_folder(folder: str) -> str:
     return folder_path
 
 
+def _scan_directory(folder: str, prefix: str) -> str:
+    """Resolve the actual scan/output directory ``folder/prefix``.
+
+    Per specs goal 5 the node walks ``folder/prefix`` (the ``prefix``
+    subdirectory under ``folder``) and writes the merged file back into that
+    same directory. ``_resolved_folder`` resolves and validates ``folder``
+    (root-escape check, is-a-directory); this joins ``prefix`` on top and
+    validates the combined path.
+
+    Raises:
+        ValueError: if ``prefix`` is empty, or ``folder/prefix`` is not a
+            directory (plus ``_resolved_folder``'s empty/escaping errors).
+        FileNotFoundError: if ``folder/prefix`` does not exist.
+    """
+    folder_path = _resolved_folder(folder)
+    prefix = (prefix or "").strip()
+    if not prefix:
+        raise ValueError("Prefix is empty; specify the directory name under folder to merge.")
+    scan_dir = os.path.join(folder_path, prefix)
+    if not os.path.exists(scan_dir):
+        raise FileNotFoundError(f"Folder/prefix not found: {scan_dir}")
+    if not os.path.isdir(scan_dir):
+        raise ValueError(f"Not a directory: {scan_dir}")
+    return scan_dir
+
+
 def _merged_output_regex(prefix: str) -> "re.Pattern[str]":
     """Regex matching previously produced ``<prefix>_merged-<timestamp>.mp4`` files."""
     return re.compile(
@@ -96,13 +124,26 @@ def _merged_output_regex(prefix: str) -> "re.Pattern[str]":
     )
 
 
+def _natural_sort_key(name: str) -> list:
+    """Natural-order sort key so the numeric clip suffix sorts numerically.
+
+    Splitting on digit runs yields alternating text/int tokens, so
+    ``clip0, clip1, clip2, clip10`` orders correctly instead of the
+    lexicographic ``clip0, clip1, clip10, clip2`` (specs goal 5 requirement).
+    """
+    return [int(tok) if tok.isdigit() else tok for tok in re.split(r"(\d+)", name)]
+
+
 def _list_sources(folder_path: str, prefix: str) -> list[str]:
-    """Absolute paths of the merge sources, ascending by filename.
+    """Absolute paths of the merge sources, ascending by clip suffix number.
 
     Keeps every regular file in ``folder_path`` whose name starts with
     ``prefix``, excluding previously produced merged outputs
     (``<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4``) and everything ComfyUI does
     not recognise as a video (``folder_paths.filter_files_content_types``).
+    Sources are ordered by the clip suffix *number* (natural order), so
+    ``dance_clip0, dance_clip1, ..., dance_clip10, dance_clip11`` merge in the
+    right sequence rather than lexicographically.
     """
     prefix = (prefix or "").strip()
     if not prefix:
@@ -117,7 +158,7 @@ def _list_sources(folder_path: str, prefix: str) -> list[str]:
         and os.path.isfile(os.path.join(folder_path, name))
     ]
     names = folder_paths.filter_files_content_types(names, ["video"])
-    names.sort()
+    names.sort(key=_natural_sort_key)
     return [os.path.join(folder_path, name) for name in names]
 
 
@@ -197,7 +238,7 @@ def _probe_source(path: str) -> dict:
     return info
 
 
-def _reencode_ffmpeg(sources: list[str], out_path: str) -> None:
+def _reencode_ffmpeg(sources: list[str], out_path: str, with_audio: bool = True) -> None:
     """Merge ``sources`` into ``out_path`` by re-encoding one H.264 + AAC file.
 
     The only merge path. Every input's video is normalised to the first
@@ -208,6 +249,11 @@ def _reencode_ffmpeg(sources: list[str], out_path: str) -> None:
     h264/yuv420p video plus an AAC audio track (or video-only when no input
     has audio). Re-encoding — rather than the concat demuxer's stream copy —
     is what keeps the audio splice clean.
+
+    ``with_audio=False`` forces a video-only merge (no audio filters, no
+    silence pads, ``concat=a=0``): used when a provided external video's audio
+    is about to replace the clips' audio, so the soon-to-be-discarded audio
+    never gets encoded.
     """
     _ffmpeg()
     infos = [_probe_source(source) for source in sources]
@@ -221,7 +267,7 @@ def _reencode_ffmpeg(sources: list[str], out_path: str) -> None:
     width, height = first["width"], first["height"]
     canonical_fps = first["fps"] or 30.0
     fps_fmt = f"{canonical_fps:g}"
-    any_audio = any(info["has_audio"] for info in infos)
+    any_audio = with_audio and any(info["has_audio"] for info in infos)
     audio_source = next((i for i in infos if i["has_audio"]), None)
     sample_rate = audio_source["sample_rate"] if audio_source else 44100
     layout = _channel_layout(audio_source["channels"] if audio_source else 2)
@@ -291,6 +337,111 @@ def _reencode_ffmpeg(sources: list[str], out_path: str) -> None:
         )
 
 
+def _video_signature(video: "VideoInput", skip_frames: int) -> str:
+    """Lightweight content signature of a provided video (no full decode).
+
+    Uses the cheap ``VideoInput`` accessors (frame count, rate, duration) so a
+    resolved video invalidates the execution cache when it changes. On any
+    accessor failure the signature falls back to the skip count alone.
+    """
+    try:
+        frames = video.get_frame_count()
+        rate = float(video.get_frame_rate())
+        duration = float(video.get_duration() or 0.0)
+    except Exception:
+        return f"skip={skip_frames}"
+    return f"frames={frames},rate={rate},dur={duration},skip={skip_frames}"
+
+
+def _extract_audio(video: "VideoInput", skip_frames: int, workdir: str) -> str:
+    """Strip the audio from ``video`` (after dropping ``skip_frames`` frames)
+    into a temporary AAC file and return its path.
+
+    ``video.get_stream_source()`` yields either a file path or a ``BytesIO``;
+    the latter is written out into ``workdir`` so ffmpeg can read it. The audio
+    is cut at ``skip_frames / fps`` seconds and re-encoded to AAC. A source
+    without an audio track raises a clear error rather than an empty file.
+    """
+    source = video.get_stream_source()
+    if isinstance(source, str):
+        source_path = source
+    else:  # BytesIO (e.g. a tensor-backed video) — materialise to a file.
+        source_path = os.path.join(workdir, "video_source")
+        if hasattr(source, "seek"):
+            source.seek(0)
+        with open(source_path, "wb") as f:
+            shutil.copyfileobj(source, f)
+
+    # Confirm the source actually carries an audio stream up front.
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", source_path],
+        capture_output=True, text=True, check=True,
+    )
+    if "audio" not in probe.stdout:
+        raise ValueError("The provided 'video' has no audio track to strip.")
+
+    fps = float(video.get_frame_rate() or 0)
+    skip_time = (skip_frames or 0) / fps if fps > 0 else 0.0
+    audio_path = os.path.join(workdir, "ext_audio.m4a")
+    command = ["ffmpeg", "-y", "-v", "error"]
+    if skip_time > 0:
+        command += ["-ss", f"{skip_time:.6f}"]
+    command += ["-i", source_path, "-vn", "-c:a", "aac", "-b:a", "192k", audio_path]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg audio extraction failed:\n{(result.stderr or '').strip()}"
+        )
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+        raise RuntimeError(
+            "ffmpeg produced no audio from the provided 'video'; it may have no audio track."
+        )
+    return audio_path
+
+
+def _replace_audio(merged_path: str, video: "VideoInput", skip_frames: int) -> None:
+    """Swap the merged video's audio for the external soundtrack.
+
+    ``merged_path`` was already produced video-only. This strips the audio from
+    ``video`` (after ``skip_frames``) and muxes it onto the merged video,
+    trimming the audio to the merged video's duration when it runs longer. The
+    result replaces the merged file in place.
+    """
+    _ffmpeg()
+    with tempfile.TemporaryDirectory(prefix="lesca_video_combine_") as workdir:
+        audio_path = _extract_audio(video, skip_frames, workdir)
+        # The video stream is the length bound; cut the audio to it.
+        video_duration = _probe_source(merged_path)["duration"]
+        # Write the muxed output next to merged_path on the same filesystem:
+        # os.replace() is rename(2), which fails across devices (e.g. /tmp
+        # tmpfs -> /opt/comfyui) even where shutil.move would just copy the
+        # whole file. A dot-prefixed name in the target directory collides
+        # neither with the source clips nor with the real merged name.
+        merged_dir = os.path.dirname(merged_path)
+        final_path = os.path.join(merged_dir, f".{os.path.basename(merged_path)}.lesca-tmp.mp4")
+        try:
+            command = [
+                "ffmpeg", "-y", "-v", "error",
+                "-i", merged_path, "-i", audio_path,
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "copy", "-c:a", "copy",
+            ]
+            if video_duration > 0:
+                command += ["-t", f"{video_duration:.6f}"]
+            command += [final_path]
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg audio mux failed:\n{(result.stderr or '').strip()}"
+                )
+            os.replace(final_path, merged_path)
+        finally:
+            # If the mux failed or replace threw, don't leave the temp file behind.
+            if os.path.exists(final_path):
+                os.remove(final_path)
+
+
 class VideoCombineLesca(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -312,14 +463,27 @@ class VideoCombineLesca(io.ComfyNode):
                     display_name="folder",
                     default="output/video",
                     dynamic_prompts=True,
-                    tooltip="Directory containing the videos to merge, e.g. 'output/video'. A relative path resolves against the ComfyUI root directory; an absolute path is used as-is. May be connected to a string-producing node.",
+                    tooltip="Base directory; the node walks the 'folder/prefix' subdirectory and writes the merged file there, e.g. 'output/video'. A relative path resolves against the ComfyUI root directory; an absolute path is used as-is. May be connected to a string-producing node.",
                 ),
                 io.String.Input(
                     "prefix",
                     display_name="prefix",
                     default="",
                     dynamic_prompts=True,
-                    tooltip="Filename prefix of the videos to merge, e.g. 'dance' merges dance_clip0.mp4, dance_clip1.mp4, ... in ascending filename order. May be connected to a string-producing node.",
+                    tooltip="Subdirectory under 'folder' to walk (and where the merged file is written); clips inside must start with this name, e.g. 'dance' walks folder/dance and merges dance_clip0.mp4, dance_clip1.mp4, ... in ascending clip-suffix-number order. May be connected to a string-producing node.",
+                ),
+                io.Video.Input(
+                    "video",
+                    display_name="video",
+                    optional=True,
+                    tooltip="Optional external video whose audio replaces the merged clips' audio: its soundtrack is stripped (with the first skip_frames frames removed) and used as the merged video's audio, trimmed to the merged video's length if it runs longer. Leave empty to keep the clips' own (re-encoded) audio.",
+                ),
+                io.Int.Input(
+                    "skip_frames",
+                    display_name="skip_frames",
+                    default=0,
+                    min=0,
+                    tooltip="Number of frames to drop from the provided 'video' before stripping its audio; the audio after those frames becomes the merged soundtrack. Ignored when 'video' is empty.",
                 ),
             ],
             outputs=[
@@ -331,18 +495,24 @@ class VideoCombineLesca(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, folder: str, prefix: str, any=None) -> io.NodeOutput:
-        folder_path = _resolved_folder(folder)
+    def execute(cls, folder: str, prefix: str, any=None,
+                video: "VideoInput | None" = None, skip_frames: int = 0) -> io.NodeOutput:
+        if video is not None and not isinstance(video, VideoInput):
+            raise ValueError("Input must be io.Video.")
+        if video is not None and skip_frames is not None and skip_frames < 0:
+            raise ValueError("skip_frames must be >= 0.")
+
         prefix = (prefix or "").strip()
-        sources = _list_sources(folder_path, prefix)
+        scan_dir = _scan_directory(folder, prefix)
+        sources = _list_sources(scan_dir, prefix)
         if not sources:
             raise ValueError(
-                f"No video files starting with {prefix!r} found in {folder_path}."
+                f"No video files starting with {prefix!r} found in {scan_dir}."
             )
 
-        # <prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4, in the same directory.
+        # <prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4, in folder/prefix.
         out_name = f"{prefix}_merged-{time.strftime('%Y_%m_%d_%H_%M_%S')}.mp4"
-        out_path = os.path.join(folder_path, out_name)
+        out_path = os.path.join(scan_dir, out_name)
         # Same-second collision guard: never overwrite an existing file.
         stem, ext = os.path.splitext(out_path)
         counter = 1
@@ -352,24 +522,36 @@ class VideoCombineLesca(io.ComfyNode):
 
         # Always re-encode through the concat filter: a clean audio splice,
         # and compatible handling of mixed resolutions / frame rates / codecs.
-        _reencode_ffmpeg(sources, out_path)
+        # When an external video's audio is about to replace the clips' audio,
+        # merge video-only to avoid encoding audio that would be discarded.
+        _reencode_ffmpeg(sources, out_path, with_audio=(video is None))
+
+        if video is not None:
+            # Swap in the external soundtrack (first skip_frames frames dropped).
+            _replace_audio(out_path, video, skip_frames)
 
         return io.NodeOutput(out_path)
 
     @classmethod
-    def fingerprint_inputs(cls, folder: str | None, prefix: str | None, any=None) -> float:
+    def fingerprint_inputs(cls, folder: str | None, prefix: str | None, any=None,
+                          video: "VideoInput | None" = None, skip_frames: int = 0) -> float:
         # Linked (unresolved) inputs arrive as None before the graph executes —
         # the directory cannot be listed yet. Return a constant; the cache's
         # input signature still includes the linked node's own signature, so a
         # changed linked value invalidates the cached output.
+        #
+        # A provided 'video' also changes the output (its audio is swapped in),
+        # so a resolved video is mixed into the signature by its content
+        # (frame count, rate and duration); a linked one is None here and its
+        # own signature already covers it, same as the linked folder/prefix.
         if folder is None or prefix is None:
             return 0.0
         try:
-            folder_path = _resolved_folder(folder)
+            scan_dir = _scan_directory(folder, (prefix or "").strip())
         except (ValueError, FileNotFoundError):
             return 0.0
         try:
-            sources = _list_sources(folder_path, (prefix or "").strip())
+            sources = _list_sources(scan_dir, (prefix or "").strip())
         except ValueError:
             return 0.0
         # The merge output depends on the set of source files and their
@@ -379,19 +561,30 @@ class VideoCombineLesca(io.ComfyNode):
         signature = ",".join(
             f"{os.path.basename(source)}:{int(os.path.getmtime(source))}" for source in sources
         )
+        # A resolved video changes the output (its audio is swapped in), so mix
+        # it in; a linked video arrives as None and its own signature covers it.
+        if video is not None:
+            signature += "|" + _video_signature(video, skip_frames)
         return float(hash(signature)) % 2**53
 
     @classmethod
-    def validate_inputs(cls, folder: str | None, prefix: str | None, any=None) -> bool | str:
+    def validate_inputs(cls, folder: str | None, prefix: str | None, any=None,
+                        video: "VideoInput | None" = None, skip_frames: int = 0) -> bool | str:
         # Linked (unresolved) inputs arrive as None during prompt validation;
         # accept them, as Load Video (Lesca) does.
         if folder is None and prefix is None:
             return True
         try:
-            if folder is not None:
-                _resolved_folder(folder)
             if prefix is not None and not (prefix or "").strip():
-                return "Prefix is empty; specify the filename prefix of the videos to merge."
+                return "Prefix is empty; specify the directory name under folder to merge."
+            if folder is not None and prefix is not None:
+                _scan_directory(folder, (prefix or "").strip())
+            elif folder is not None:
+                _resolved_folder(folder)
+            if video is not None and not isinstance(video, VideoInput):
+                return "video must be io.Video."
+            if video is not None and skip_frames is not None and skip_frames < 0:
+                return "skip_frames must be >= 0."
         except (ValueError, FileNotFoundError) as e:
             return str(e)
         return True

@@ -17,7 +17,7 @@ Lesca 的自定义 ComfyUI 节点。
 | [Save Video (Lesca)](#save-video-lesca) | 把内置 `Create Video` + `Save Video` 合并为一个节点 | 用户指定保存路径（无 `_000001_` 计数器后缀）；帧 + 音频裁剪；裁剪后的 `images` / `audio` 透传为输出 |
 | [Video Info (Lesca)](#video-info-lesca) | 以独立输出报告视频各项属性，供工作流分支使用 | `fps` / `bit_depth` / `color_space` / `width` / `height` / `frame_count`，外加逐行输出的 `video_info` 字符串；输出节点，可单独运行 |
 | [Video to Images (Lesca)](#video-to-images-lesca) | 把视频解码成一批图片帧 | force-rate → trim → frame-cap → resize 管线；窗口化解码（不全量解码）；音频区间随导出帧同步裁剪 |
-| [Video Combine (Lesca)](#video-combine-lesca) | 把目录中所有同前缀的视频文件合并成一个 | 任意上游输出触发；始终经 concat filter 重编码、接缝干净；自动排除已合并产物；按源文件指纹做执行缓存 |
+| [Video Combine (Lesca)](#video-combine-lesca) | 把 `folder/prefix` 目录中所有同前缀的视频文件按 clip 后缀数字升序（自然排序）合并成一个；可选用外部 `video` 的音轨（可跳过前 `skip_frames` 帧）替换合成视频的声音 | 任意上游输出触发；无 `video` 时经 concat filter 重编码、接缝干净；有 `video` 时仅合并视频流、音轨剥离后按视频长度截断；自动排除已合并产物；按源文件指纹做执行缓存 |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | 截取头部/尾部一段帧，添加互相独立的逐帧噪声 | 分层强度调度（`frame_num_list` / `strenth_list`）；可选 seed 复现逐帧噪声；短视频钳制 |
 | [Context Clips (Lesca)](#context-clips-lesca) | 适用于 MiniMax H3 动作迁移类跑火车长视频生成：固定步长 `clip_frames` 切片、`context_frames` 重叠（考虑 "Add Guide" / "Motion Context" 节点产生的重叠帧影响） | 由 `frame_count` + `fps` 算出 `total_clips`（int）+ `clip_info` dict（`clip_frames`、`init_index`、`total_clips`、`last_clip_frames`、`target_frames`、`context_frames`）；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
 | [Current Clip (Lesca)](#current-clip-lesca) | 根据 Context Clips (Lesca) 的 `clip_info` 和片段索引，解析该片段所需的帧数和跳过帧数 | 非末片段返回 `clip_frames`，末片段返回 `last_clip_frames`；`skip_frames` 计算需要跳过的帧数；避免直接连线 `last_clip_frames` 导致的循环连接错误；输出节点，可单独运行 |
@@ -199,7 +199,7 @@ Video`，`format`（嵌套 `codec` → `encoding` → `crf`）来自 `Save Video
 
 ## Video Combine (Lesca)
 
-把指定目录中指定前缀的视频文件合并成一个文件，由任意上游输出触发——例如把
+把 `folder/prefix` 目录中指定前缀的视频文件合并成一个文件，由任意上游输出触发——例如把
 Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片段就会自动触发
 对其所在目录的合并。
 
@@ -208,23 +208,26 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `any` | `Any`（可选） | 触发输入：接受**任意**上游类型的输出即可启动本节点的运行（例如 `Save Video (Lesca)` 的 `filename`，新片段保存完成即触发合并）。可选——不连线也能单独运行。 |
-| `folder` | `String` | 要扫描的目录，例如 `output/video`（默认值）。相对路径基于 ComfyUI **根目录**解析；绝对路径原样使用。可连接到字符串产出节点。 |
-| `prefix` | `String` | 要合并的片段文件名前缀，例如 `dance`。可连接到字符串产出节点。 |
+| `folder` | `String` | 基础目录；节点遍历 `folder/prefix` 子目录并把合并产物写回该处，例如 `output/video`（默认值）。相对路径基于 ComfyUI **根目录**解析；绝对路径原样使用。可连接到字符串产出节点。 |
+| `prefix` | `String` | `folder` 下要遍历的子目录（也是合并产物的写入位置）；其中的片段须以此名开头，例如 `dance`；片段按 clip 后缀数字升序（自然排序）合并，`clip0`、`clip1` … `clip10`、`clip11` 顺序正确。可连接到字符串产出节点。 |
+| `video` | `Video`（可选） | 外部音轨来源。提供时，节点先**仅合并视频流**，再剥离该 `video` 的音频作为合成视频的配乐，并按视频长度截断过长的音轨；`video` 无音轨则抛错。可选。 |
+| `skip_frames` | `Int`（默认 `0`） | 提供 `video` 时，从该视频的音频中跳过的帧数：先丢弃前 `skip_frames` 帧（`-ss skip_frames/帧率`），再剥离剩余音频。不提供 `video` 时被忽略。 |
 
 ### 输出
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `filename` | `String` | 合并后视频的绝对路径，例如 `/…/output/video/dance_merged-2026_10_18_16_33_44.mp4`。 |
+| `filename` | `String` | 合并后视频的绝对路径，例如 `/…/output/video/dance/dance_merged-2026_10_18_16_33_44.mp4`。 |
 
 ### 行为
 
-* 节点遍历 `folder`，保留所有以 `prefix` 开头的**视频**文件（`.txt` 等非视频
-  文件由 ComfyUI 的视频内容类型过滤器跳过），按**文件名升序**排列，合并成一个
-  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4`，保存在同一目录。
+* 节点遍历 `folder/prefix`，保留其中以 `prefix` 开头的**视频**文件（`.txt` 等非视频
+  文件由 ComfyUI 的视频内容类型过滤器跳过），按**clip 后缀数字升序**（自然排序，因此 `clip0`、`clip1` … `clip10`、`clip11`
+  能正确合并而非按字典序）排列，合并成一个
+  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4`，保存在同一 `folder/prefix` 目录。
 * 之前生成的 `<prefix>_merged-…mp4` 会被**排除在扫描之外**，因此对同一目录再次
   运行节点时合并的是原始片段，绝不会合并已经合并过的文件。
-* 合并策略：每次合并都经 **concat filter 重编码**成一个全新的 H.264 + AAC
+* **无外部 `video` 时**：合并经 **concat filter 重编码**成一个全新的 H.264 + AAC
   文件——流拷贝路径已弃用，因为 concat demuxer 的 `-c copy` 在某个片段的音频
   时长不是 AAC 整帧的整数倍时，会在每个拼接处重复最后一个 AAC 帧，表现为接缝
   处可闻的掉帧与重复。重编码会把每个输入的视频归一化到首个源的分辨率与帧率、
@@ -233,6 +236,12 @@ Save Video (Lesca) 的 `filename` 输出接到本节点，每保存一个新片�
   裁到它自己的视频时长，使多余的 AAC 补齐不额外增帧、接缝保持干净。命令行直接
   构建并用 `subprocess` 运行——要求系统 PATH 上同时有 `ffmpeg` **和**
   `ffprobe` 二进制（提前检查）。
+* **提供外部 `video` 时**：片段先做**仅视频流**合并（即上面去掉了音频的干净拼接重编码），
+  这样很快要被丢弃的片段音频不会被编码。随后节点用 `ffmpeg` 剥离 `video` 的音频，
+  丢弃其前 `skip_frames` 帧（`-ss skip_frames/帧率`）并把剩余部分重编码为 AAC；
+  `video` 无音轨则抛出清晰错误。该配乐用视频流拷贝的方式混流到合并视频上，音轨更长
+  时按合并视频时长截断（视频为长度上限）。提供的 `video` 还会进入执行缓存指纹，
+  因此 `video` 变更会失效缓存输出。
 * 该节点是输出节点：即使没有任何下游节点连接 `filename` 输出，Queue 也会执行
   它。
 * 执行缓存以匹配片段的 `(basename, mtime)` 集合指纹为键：新增或修改片段会产出
@@ -377,9 +386,9 @@ ComfyUI/custom_nodes/comfyui-lesca-nodes/
   depth / color space / width / height / frame count）。
 * `lesca_video_to_images.py` — Video to Images 节点（窗口化解码，
   force-rate → trim → frame-cap → resize 管线，音频区间切片）。
-* `lesca_video_combine.py` — Video Combine 节点（前缀扫描、文件名升序、
-  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` 产物自排除、始终经 concat filter
-  重编码以获得干净音频接缝、源文件集合执行缓存指纹）。
+* `lesca_video_combine.py` — Video Combine 节点（`folder/prefix` 前缀扫描、clip 后缀数字升序、
+  `<prefix>_merged-YYYY_MM_DD_HH_MM_SS.mp4` 产物自排除、经 concat filter
+  重编码获得干净音频接缝，或在可选外部 `video` 的音频（跳过 `skip_frames` 帧后）替换片段音频并按视频长度截断、源文件集合执行缓存指纹）。
 * `lesca_video_add_noise.py` — Video Add Noise 节点（head/tail 截帧走懒式
   `as_trimmed` 窗口、独立的逐帧噪声与分层强度调度、可选 seed、短视频钳制）。
 * `lesca_context_clips.py` — Context Clips 节点（由容器元数据算出总片段数 +
