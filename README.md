@@ -16,7 +16,7 @@ Currently provides **Load Video (Lesca)**, **Save Video (Lesca)**,
 | [Load Video (Lesca)](#load-video-lesca) | Loads a video from an explicit file path, mirroring the built-in `LoadVideo` output | Any path (relative to the ComfyUI root, or absolute); live in-node preview without running the node; deterministic white placeholder when the file is missing |
 | [Save Video (Lesca)](#save-video-lesca) | Merges the built-in `Create Video` + `Save Video` into a single node | User-specified save path (no `_000001_` counter suffix); frame + audio trimming; trimmed `images` / `audio` passed through as outputs |
 | [Video Info (Lesca)](#video-info-lesca) | Reports a video's properties as individual outputs, for workflow branching | `fps` / `bit_depth` / `color_space` / `width` / `height` / `frame_count`, plus a one-per-line `video_info` string; output node, runs standalone |
-| [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); audio span sliced to match the exported frames |
+| [Video to Images (Lesca)](#video-to-images-lesca) | Decodes a video into a batch of image frames | force-rate → trim → frame-cap → resize pipeline; windowed decode (no full-file decode); VFR videos are converted to CFR via ffmpeg (cached in ComfyUI temp dir) before windowed decode; audio span sliced to match the exported frames |
 | [Video Combine (Lesca)](#video-combine-lesca) | Merges every same-prefix video file in the `folder/prefix` directory into one file | Triggered by any upstream output; clips merge in natural clip-suffix-number order (clip0, clip1, …, clip10); always re-encodes through the concat filter for a clean audio seam — or video-only, when an optional external video's audio (with `skip_frames` leading frames dropped) replaces the clips' audio and is trimmed to the video's length; previous merge outputs self-excluded; execution cache keyed by the source-file fingerprint |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | Cuts a head/tail block of frames and adds independent per-frame noise | Per-layer strength schedule (`frame_num_list` / `strenth_list`); optional seed for reproducible per-frame noise; short-video clamp |
 | [Context Clips (Lesca)](#context-clips-lesca) | For MiniMax H3 action-migration "run-the-train" long-video generation: slice `frame_count` with a fixed-stride `clip_frames`, overlapping slices by `context_frames` to account for the overlap-frame effect produced by the "Add Guide" / "Motion Context" nodes | `total_clips` (int) + `clip_info` dict (`clip_frames`, `init_index`, `total_clips`, `last_clip_frames`, `target_frames`, `context_frames`) from `frame_count` + `fps`; `target_fps = 0` keeps the source rate; output node, runs standalone |
@@ -208,6 +208,18 @@ The pipeline runs **force-rate → trim → frame-cap → resize**:
 * **resize** — `custom_width` / `custom_height`: both `0` keeps the source
   dimensions; exactly one `0` scales the other proportionally; both non-zero
   scales to exactly `(W, H)`.
+
+### VFR → CFR conversion
+
+Variable-frame-rate videos (detected when the video's `average_rate` differs
+from its `base_rate` by more than 1 %) are first converted to
+constant-frame-rate via `ffmpeg` into ComfyUI's temp directory
+(`folder_paths.get_temp_directory()`) before the windowed decode. The target
+CFR rate is `force_rate` when set, otherwise the ffprobe `avg_frame_rate`.
+The converted file is cached under a deterministic name (hash of source path
++ target rate), so a second run on the same input skips the re-encode. After
+conversion the normal windowed-decode path applies to the CFR file, and the
+`fps` output reflects the CFR rate.
 
 
 ## Video Combine (Lesca)

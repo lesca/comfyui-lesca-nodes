@@ -76,10 +76,13 @@ Comfy UI中自带的节点将图片保存成视频需要使用Create Video和Sav
   * custom_height 或者 custom_width 其中一个为0，一个不为0。就等比例缩放。
   * custom_height 和 custom_width 两者都非 0 → 精确缩放到 (W,H)
 * 顺序：force-rate → trim → frame-cap → resize
-* 窗口化解码：对普通文件输入的 io.Video，节点只解码导出帧覆盖的窗口 [q[0]/S, (q[-1]+1)/S)（S 为源帧率），而不是整个文件——导出长视频的前 1 秒不再触发全量解码导致的内存爆炸。
-  * 当 PyAV 容器元数据缺失帧率或帧数时（VFR、无帧数等），通过 ffprobe 子进程回退获取 avg_frame_rate / nb_frames，无需全量解码。
-  * 解码窗口返回的帧数不足时（VFR pts 偏差），窗口时长按 1.5× 递增重试（最多 4 次），而非直接全量解码。
-  * 仅当 PyAV 与 ffprobe 均无法提供元数据、或所有窗口重试均失败时，才回退到全量解码 + 相同索引映射（此时输入通常是张量型视频，已驻留内存，无额外开销）。两条路径输出逐像素一致。
+* 解码之前，调用 ComfyUI 现成的 RAM 释放钩子，把上一代的张量先驱逐掉，
+* 窗口化解码：对普通文件输入的 io.Video，节点只解码导出帧覆盖的窗口 [q[0]/S, (q[-1]+1)/S)（S 为源帧率）
+* 对于 VFR 视频，使用 ffmpeg 转换为 CFR 固定码率，存放 comfyui/temp 目录（如果文件已存在，则无需再次转码），再用窗口化解码
+  * temp 目录：使用 ComfyUI 的 folder_paths.get_temp_directory()
+  * 当 PyAV 的 average_rate 不可用时，用 ffprobe 获取 avg_frame_rate
+  * 如果 force_rate 被指定，则目标 CFR 使用指定帧率
+  * 使用 CFR 后节点的 fps 输出信息应同步更新，反映当前 clip 的真实 fps
 * 使用 trim 切片可以保证切片之间无缝连接。例如 frame_cap=124, trim=0,124,248,.. 的切片可以无缝连接
 
 ## 目标 5: Video Combine (Lesca) 节点

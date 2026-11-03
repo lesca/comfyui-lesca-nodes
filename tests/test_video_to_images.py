@@ -437,6 +437,63 @@ check("VFR: 5 frames exported", images.shape[0] == 5, f"got {images.shape[0]}")
 check("VFR: frames match reference gather [0..4]",
       all(torch.equal(images[i], ref_vfr_frames[i]) for i in range(5)))
 
+# ---------------------------------------------------------------------------
+# VFR → CFR conversion path: the VFR test video has avg_frame_rate ≠
+# base_rate, so _is_vfr detects it naturally — no monkey-patch needed.
+# ---------------------------------------------------------------------------
+
+print("\n== VFR → CFR conversion path")
+
+# The earlier "fallback paths" VFR test already triggered a CFR conversion;
+# clean the temp directory so this section starts from a clean slate.
+import folder_paths
+temp_dir = folder_paths.get_temp_directory()
+for f in os.listdir(temp_dir):
+    if f.startswith("vfr_cfr_") and f.endswith(".mp4"):
+        os.remove(os.path.join(temp_dir, f))
+
+# Run 1: CFR file does not exist yet → ffmpeg converts it.
+cfr_files_before = set(os.listdir(temp_dir)) if os.path.isdir(temp_dir) else set()
+images, audio, fps, vout = run(vfr_video, frame_cap=5)
+check("CFR: 5 frames exported via converted file", images.shape[0] == 5,
+      f"got {images.shape[0]}")
+# The VFR file's avg_frame_rate is 300/13 (30 frames / 1.3 s duration);
+# with force_rate=0 the CFR target is this rate, so fps reflects it.
+check("CFR: fps reflects the CFR rate (300/13 for this VFR source)",
+      abs(fps - 300.0 / 13) < 0.01, f"got {fps}")
+# A new CFR file should have appeared in the temp directory.
+cfr_files_after = set(os.listdir(temp_dir)) if os.path.isdir(temp_dir) else set()
+new_cfr = cfr_files_after - cfr_files_before
+check("CFR: a new .mp4 file was created in the temp directory",
+      any(f.endswith(".mp4") for f in new_cfr), f"new files: {new_cfr}")
+
+# Run 2: CFR file already exists → no re-encode (cached).
+import subprocess as _sp
+# Record mtime of the CFR file to verify it's not rewritten.
+cfr_new = [f for f in new_cfr if f.endswith(".mp4")]
+if cfr_new:
+    cfr_path = os.path.join(temp_dir, cfr_new[0])
+    mtime_before = os.path.getmtime(cfr_path)
+    images2, audio2, fps2, vout2 = run(vfr_video, frame_cap=5)
+    mtime_after = os.path.getmtime(cfr_path)
+    check("CFR cache: file not rewritten on second run",
+          mtime_before == mtime_after,
+          f"mtime changed {mtime_before} -> {mtime_after}")
+    check("CFR cache: same 5 frames exported", images2.shape[0] == 5)
+else:
+    check("CFR cache: no CFR file found to test caching", False)
+
+# force_rate=24 → CFR target rate = 24, fps output = 24.0
+cfr_files_before2 = set(os.listdir(temp_dir)) if os.path.isdir(temp_dir) else set()
+images3, audio3, fps3, vout3 = run(vfr_video, frame_cap=5, force_rate=24)
+check("CFR force_rate=24: fps is 24.0", fps3 == 24.0, f"got {fps3}")
+check("CFR force_rate=24: 5 frames exported", images3.shape[0] == 5,
+      f"got {images3.shape[0]}")
+cfr_files_after2 = set(os.listdir(temp_dir)) if os.path.isdir(temp_dir) else set()
+new_cfr2 = cfr_files_after2 - cfr_files_before2
+check("CFR force_rate=24: a separate CFR file was created (different rate)",
+      any(f.endswith(".mp4") for f in new_cfr2), f"new files: {new_cfr2}")
+
 InputImpl.VideoFromFile.get_components = _orig_get_components
 
 print("== validate_inputs (the loader's validation path)")

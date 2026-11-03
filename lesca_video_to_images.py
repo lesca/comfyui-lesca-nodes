@@ -17,14 +17,25 @@ alone — force-rate first (output frame ``i`` takes source frame
 drops the first ``R`` output frames, ``tail`` the last ``R``), then frame-cap
 (at most ``C`` output frames, ``0`` = no cap) — and, for plain file-backed
 input, decodes only the window ``[q[0]/S, (q[-1]+1)/S)`` that those frames
-span (padded by at most ``1/(2S)`` on each side so the audio stretch also
-fits — see the Audio section). Exporting the first second of a one-hour
-video then touches exactly those frames instead of the whole file. Inputs where that is not possible
-(tensor ``VideoFromComponents`` videos, videos already carrying a non-trivial
-trim window, unknown frame rate or frame count in the container metadata,
-or a decode that comes back short for pts quirks) fall back to the full
-decode path, which applies the same index map to the already-loaded tensors.
-Both paths produce identical frames.
+span. Exporting the first second of a one-hour
+video then touches exactly those frames instead of the whole file.
+
+VFR handling
+------------
+Variable-frame-rate videos (``average_rate`` differs from ``base_rate`` by
+more than 1 %) are first converted to constant-frame-rate via ffmpeg into
+ComfyUI's temp directory (``folder_paths.get_temp_directory()``). The target
+CFR rate is ``force_rate`` when set, otherwise the ffprobe
+``avg_frame_rate``. The converted file is cached: a deterministic filename
+derived from the source path and target rate means the second run reuses the
+existing file without re-encoding. After conversion the normal windowed-decode
+path applies to the CFR file.
+
+Inputs where windowed decode is not possible (tensor ``VideoFromComponents``
+videos, videos already carrying a non-trivial trim window, or both PyAV and
+ffprobe failing to provide metadata) fall back to the full decode path, which
+applies the same index map to the already-loaded tensors. Both paths produce
+identical frames.
 
 Audio
 -----
@@ -55,7 +66,9 @@ otherwise the source rate.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import subprocess
 from fractions import Fraction
 
@@ -64,6 +77,11 @@ import torch
 import torch.nn.functional as F
 
 from comfy_api.latest import io, InputImpl, Types, VideoInput
+
+try:
+    import comfy.memory_management as _ram
+except ImportError:  # standalone / non-ComfyUI context
+    _ram = None
 
 
 def _plan_indices(N, S, trim_mode, R, T, C):
@@ -129,6 +147,64 @@ def _ffprobe_video_metadata(source):
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError,
             IndexError, ValueError):
         return None
+
+
+def _is_vfr(source):
+    """Return True when the file-backed video is variable-frame-rate.
+
+    A video is VFR when its actual average frame rate differs from the
+    container's base (nominal) rate by more than 1 %. BytesIO sources and
+    unreadable files are treated as not-VFR (the full decode fallback will
+    handle them).
+    """
+    if not isinstance(source, str) or not os.path.isfile(source):
+        return False
+    try:
+        with av.open(source, mode="r") as container:
+            stream = container.streams.video[0]
+            avg = stream.average_rate
+            base = stream.base_rate
+            if avg is None or base is None:
+                return True
+            return abs(float(avg) - float(base)) / float(base) > 0.01
+    except (av.error.FFmpegError, OSError, ValueError):
+        return False
+
+
+def _ensure_cfr(source, target_rate=None):
+    """Return a path to a CFR version of ``source`` at ``target_rate`` fps.
+
+    If ``target_rate`` is None it is determined via ffprobe. If the CFR file
+    already exists in ComfyUI's temp directory the cached path is returned
+    immediately without opening the source. If the source is already CFR the
+    original path is returned. Otherwise the file is converted via ffmpeg;
+    a deterministic filename (hash of source path + target rate) means the
+    second call reuses the cached file.
+    """
+    import folder_paths
+    temp_dir = folder_paths.get_temp_directory()
+    os.makedirs(temp_dir, exist_ok=True)
+    if target_rate is None:
+        meta = _ffprobe_video_metadata(source)
+        if meta is None:
+            return source
+        target_rate = float(meta[0])
+    key = hashlib.md5(f"{source}:{target_rate}".encode()).hexdigest()[:16]
+    basename = os.path.splitext(os.path.basename(source))[0]
+    cfr_path = os.path.join(temp_dir, f"{basename}_cfr_{key}.mp4")
+    if os.path.isfile(cfr_path):
+        return cfr_path
+    if not _is_vfr(source):
+        return source
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", source,
+           "-r", str(target_rate), "-vsync", "cfr", cfr_path]
+    result = subprocess.run(cmd, capture_output=True, timeout=300)
+    if result.returncode != 0 or not os.path.isfile(cfr_path):
+        raise ValueError(
+            f"ffmpeg CFR conversion failed for {source}: "
+            f"{result.stderr.decode(errors='replace')[:500]}"
+        )
+    return cfr_path
 
 
 def _window_probe(video, R, T, C, trim_mode):
@@ -333,12 +409,51 @@ class VideoToImagesLesca(io.ComfyNode):
         T = float(force_rate or 0)
         C = int(frame_cap or 0)
 
+        # VFR handling: variable-frame-rate videos (average_rate differs from
+        # base_rate by > 1 %) are first converted to constant-frame-rate via
+        # ffmpeg into ComfyUI's temp directory. The target CFR rate is
+        # force_rate when set, otherwise the ffprobe avg_frame_rate. The
+        # converted file is cached (deterministic filename), so a second run
+        # skips the re-encode. The windowed decode then applies to the CFR
+        # file. When the CFR file already exists the source is never opened.
+        decode_video = video
+        if isinstance(video, InputImpl.VideoFromFile):
+            start_time, duration = video.get_active_trim_window()
+            if start_time == 0.0 and duration == 0.0:
+                source = video.get_stream_source()
+                if isinstance(source, str):
+                    cfr_path = _ensure_cfr(source, T if T > 0 else None)
+                    if cfr_path != source:
+                        decode_video = InputImpl.VideoFromFile(cfr_path)
+
+        # The windowed decode allocates a fresh tensor the size of the clip
+        # (e.g. ~12 GB for a 124-frame 2160x3840 clip).  If a previous run's
+        # output tensor is still sitting in the execution cache, the two coexist
+        # briefly and the peak can push the OS into swap, slowing the decode
+        # (observed: 2nd run 15+s vs a clean 5s).  execution.py's ram_release
+        # runs *after* the node, so the old tensor is freed only once the new
+        # one is already allocated.  Asking ComfyUI to release inactive cache
+        # first keeps the peak at one tensor.  free_active=False evicts only
+        # older-generation entries, so it never drops a tensor this same run
+        # produced.  extra_ram_release is a no-op when the callback isn't wired
+        # (standalone use), so this is safe everywhere.
+        if _ram is not None:
+            # RAM_CACHE_HEADROOM (~6 GB on a 60 GB box) is below the available
+            # memory, so the gate in ram_release (available >= target) is true
+            # and the call is a no-op.  Nudge the target just above the current
+            # available memory to force the gate false; the old-generation
+            # tensor (highest oom_score) is evicted first and the loop stops as
+            # soon as it fits again, so only the stale tensor is dropped.
+            from comfy.system_memory import virtual_memory_available
+            _ram.extra_ram_release(virtual_memory_available() + 1,
+                                   free_active=False)
+
         # Preferred path: decode only the frames and audio the export needs.
         # The probe reads container metadata only (no decoding); the window
         # around [q[0]/S, (q[-1]+1)/S) covers exactly the exported frames and
         # their audio stretch, so a long input video costs O(window) memory
         # instead of O(video).
-        plan = _window_probe(video, R, T, C, trim_mode)
+        plan = _window_probe(decode_video, R, T, C, trim_mode)
         images = audio = None
         S = None
         if plan is not None and plan[1] > 0:
@@ -359,23 +474,16 @@ class VideoToImagesLesca(io.ComfyNode):
             start = min(float(q[0] / S), a0)
             dur = max(float((q[-1] + 1) / S), a1) - start
             needed = q[-1] - q[0] + 1
-            # A VFR pts quirk (or container metadata lying about the rate)
-            # can make the decoded window shorter than planned.  Extend the
-            # window progressively instead of falling back to a full decode,
-            # which would load every frame of the video into memory.
-            for attempt in range(4):
-                windowed = video.as_trimmed(start, dur, strict_duration=False)
-                comps = windowed.get_components()
-                if comps.images.shape[0] >= needed:
-                    images = comps.images[[qi - q[0] for qi in q]]
-                    # The window decode covers [start, start + dur); its audio
-                    # head can drift by one sample when ComfyUI's per-frame
-                    # skip uses float-truncated seconds (upstream behaviour,
-                    # <= 21 us at 48k).  Slice the decoded audio down to the
-                    # exported span [a0, a1).
-                    audio = _audio_span(comps.audio, a0 - start, a1 - start)
-                    break
-                dur *= 1.5
+            windowed = decode_video.as_trimmed(start, dur, strict_duration=False)
+            comps = windowed.get_components()
+            if comps.images.shape[0] >= needed:
+                images = comps.images[[qi - q[0] for qi in q]]
+                # The window decode covers [start, start + dur); its audio
+                # head can drift by one sample when ComfyUI's per-frame
+                # skip uses float-truncated seconds (upstream behaviour,
+                # <= 21 us at 48k).  Slice the decoded audio down to the
+                # exported span [a0, a1).
+                audio = _audio_span(comps.audio, a0 - start, a1 - start)
 
         if images is None:
             # The windowed path is unavailable: the input is a tensor video

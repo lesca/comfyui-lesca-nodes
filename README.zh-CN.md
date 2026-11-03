@@ -16,7 +16,7 @@ Lesca 的自定义 ComfyUI 节点。
 | [Load Video (Lesca)](#load-video-lesca) | 按显式文件路径加载视频，输出与内置 `LoadVideo` 一致 | 任意路径（相对 ComfyUI 根目录或绝对路径）；无需运行节点即可实时预览；文件缺失时输出确定的白色占位视频 |
 | [Save Video (Lesca)](#save-video-lesca) | 把内置 `Create Video` + `Save Video` 合并为一个节点 | 用户指定保存路径（无 `_000001_` 计数器后缀）；帧 + 音频裁剪；裁剪后的 `images` / `audio` 透传为输出 |
 | [Video Info (Lesca)](#video-info-lesca) | 以独立输出报告视频各项属性，供工作流分支使用 | `fps` / `bit_depth` / `color_space` / `width` / `height` / `frame_count`，外加逐行输出的 `video_info` 字符串；输出节点，可单独运行 |
-| [Video to Images (Lesca)](#video-to-images-lesca) | 把视频解码成一批图片帧 | force-rate → trim → frame-cap → resize 管线；窗口化解码（不全量解码）；音频区间随导出帧同步裁剪 |
+| [Video to Images (Lesca)](#video-to-images-lesca) | 把视频解码成一批图片帧 | force-rate → trim → frame-cap → resize 管线；窗口化解码（不全量解码）；VFR 视频先经 ffmpeg 转为 CFR（缓存在 ComfyUI temp 目录）再窗口化解码；音频区间随导出帧同步裁剪 |
 | [Video Combine (Lesca)](#video-combine-lesca) | 把 `folder/prefix` 目录中所有同前缀的视频文件按 clip 后缀数字升序（自然排序）合并成一个；可选用外部 `video` 的音轨（可跳过前 `skip_frames` 帧）替换合成视频的声音 | 任意上游输出触发；无 `video` 时经 concat filter 重编码、接缝干净；有 `video` 时仅合并视频流、音轨剥离后按视频长度截断；自动排除已合并产物；按源文件指纹做执行缓存 |
 | [Video Add Noise (Lesca)](#video-add-noise-lesca) | 截取头部/尾部一段帧，添加互相独立的逐帧噪声 | 分层强度调度（`frame_num_list` / `strenth_list`）；可选 seed 复现逐帧噪声；短视频钳制 |
 | [Context Clips (Lesca)](#context-clips-lesca) | 适用于 MiniMax H3 动作迁移类跑火车长视频生成：固定步长 `clip_frames` 切片、`context_frames` 重叠（考虑 "Add Guide" / "Motion Context" 节点产生的重叠帧影响） | 由 `frame_count` + `fps` 算出 `total_clips`（int）+ `clip_info` dict（`clip_frames`、`init_index`、`total_clips`、`last_clip_frames`、`target_frames`、`context_frames`）；`target_fps = 0` 保持源帧率；输出节点，可单独运行 |
@@ -187,6 +187,15 @@ Video`，`format`（嵌套 `codec` → `encoding` → `crf`）来自 `Save Video
 * **frame-cap** — 在帧率换算与裁剪之后最多保留 `frame_cap` 帧（`0` = 不限）。
 * **resize** — `custom_width` / `custom_height`：两者都为 `0` 时保持源分辨率；
   恰好一个为 `0` 时另一个等比例缩放；两者都非 `0` 时精确缩放到 `(W, H)`。
+
+### VFR → CFR 转码
+
+可变帧率视频（`average_rate` 与 `base_rate` 差异超过 1 % 时检测）会先通过
+`ffmpeg` 转为固定帧率，存放在 ComfyUI 的 temp 目录
+（`folder_paths.get_temp_directory()`），然后对 CFR 文件做窗口化解码。目标
+CFR 帧率为 `force_rate`（若已指定），否则用 ffprobe 的 `avg_frame_rate`。
+转换产物以确定性文件名（源路径 + 目标帧率的哈希）缓存，同一输入再次运行无需
+重新转码。转换后 `fps` 输出反映 CFR 真实帧率。
 
 ## Video Combine (Lesca)
 
