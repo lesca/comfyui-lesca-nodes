@@ -209,17 +209,6 @@ The pipeline runs **force-rate → trim → frame-cap → resize**:
   dimensions; exactly one `0` scales the other proportionally; both non-zero
   scales to exactly `(W, H)`.
 
-### Windowed decode
-
-For a plain file-backed `video` input, the node reads only the container
-metadata (no decoding) and decodes just the window
-`[q[0]/S, (q[-1]+1)/S)` that the exported frames span — exporting the first
-second of a one-hour video no longer triggers a full-file decode and the
-associated memory spike. Inputs where that is not possible (tensor
-`VideoFromComponents` videos, videos already carrying a non-trivial trim
-window, unknown frame rate or frame count in the metadata, or a decode that
-comes back short for pts quirks) fall back to a full decode that applies the
-same index map to the loaded tensors; both paths produce identical frames.
 
 ## Video Combine (Lesca)
 

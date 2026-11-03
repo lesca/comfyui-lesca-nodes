@@ -55,6 +55,8 @@ otherwise the source rate.
 
 from __future__ import annotations
 
+import json
+import subprocess
 from fractions import Fraction
 
 import av
@@ -94,16 +96,52 @@ def _plan_indices(N, S, trim_mode, R, T, C):
     return q, K
 
 
+def _ffprobe_video_metadata(source):
+    """Get (rate, frames, duration) via ffprobe when PyAV metadata is missing.
+
+    Returns a ``(Fraction, int, float)`` tuple or ``None`` on failure.
+    """
+    import os
+    import io as _io
+    if isinstance(source, _io.BytesIO):
+        return None  # ffprobe needs a file path
+    if not isinstance(source, str) or not os.path.isfile(source):
+        return None
+    cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
+           "-show_streams", "-select_streams", "v:0", source]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        data = json.loads(out.stdout)
+        stream = data["streams"][0]
+        rate_str = stream.get("avg_frame_rate", "0/0")
+        num, _, den = rate_str.partition("/")
+        num, den = int(num), (int(den) if den else 1)
+        if num <= 0 or den <= 0:
+            return None
+        rate = Fraction(num, den)
+        frames = int(stream.get("nb_frames", 0))
+        duration = float(stream.get("duration", 0))
+        if frames <= 0 and duration > 0:
+            frames = int(round(duration * float(rate)))
+        if frames <= 0:
+            return None
+        return rate, frames, duration
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError,
+            IndexError, ValueError):
+        return None
+
+
 def _window_probe(video, R, T, C, trim_mode):
     """Probe a file-backed video's metadata and plan its minimal decode window.
 
     Returns ``(q, K, S)`` — the output->source index map, the output count and
     the source rate — or ``None`` when the windowed path cannot be used: the
     input is not a plain ``VideoFromFile`` (a tensor video is already in
-    memory, so there is nothing to save), the input already carries a
-    non-trivial trim window (composing windows is out of scope), or the frame
-    rate or frame count is not available from container metadata (the probe
-    would need a full decode of its own).
+    memory, so there is nothing to save), or the input already carries a
+    non-trivial trim window (composing windows is out of scope).
+
+    When PyAV's container metadata is missing (VFR, no frame count), falls
+    back to ffprobe to recover the rate and frame count.
     """
     if not isinstance(video, InputImpl.VideoFromFile):
         return None
@@ -112,21 +150,31 @@ def _window_probe(video, R, T, C, trim_mode):
         return None
 
     source = video.get_stream_source()
+    S = None
+    N = None
     try:
         with av.open(source, mode="r") as container:
             stream = container.streams.video[0]
-            if not stream.average_rate:
-                return None  # VFR / unknown rate: a pts window would be a guess
-            S = Fraction(stream.average_rate)
+            if stream.average_rate:
+                S = Fraction(stream.average_rate)
             if stream.frames:
                 N = int(stream.frames)
-            elif stream.duration is not None:
+            elif stream.duration is not None and S is not None:
                 N = int(round(float(stream.duration * stream.time_base) * float(S)))
-            else:
-                return None  # frame count unknown without a full decode
     except (av.error.FFmpegError, OSError, ValueError):
-        return None
-    if N <= 0:
+        pass
+
+    # PyAV metadata was incomplete — ask ffprobe.
+    if S is None or N is None:
+        meta = _ffprobe_video_metadata(source)
+        if meta is not None:
+            fp_rate, fp_frames, _ = meta
+            if S is None:
+                S = fp_rate
+            if N is None:
+                N = fp_frames
+
+    if S is None or N is None or N <= 0:
         return None
     q, K = _plan_indices(N, S, trim_mode, R, T, C)
     return q, K, S
@@ -310,20 +358,30 @@ class VideoToImagesLesca(io.ComfyNode):
             # audio span (they differ by at most 1/(2S) on each side).
             start = min(float(q[0] / S), a0)
             dur = max(float((q[-1] + 1) / S), a1) - start
-            windowed = video.as_trimmed(start, dur, strict_duration=False)
-            comps = windowed.get_components()
-            # A pts quirk (VFR, container metadata lying) can shrink the
-            # decoded window; then the full decode below applies the same
-            # index map to the already-loaded tensors.
-            if comps.images.shape[0] >= q[-1] - q[0] + 1:
-                images = comps.images[[qi - q[0] for qi in q]]
-                # The window decode covers [start, start + dur); its audio head
-                # can drift by one sample when ComfyUI's per-frame skip uses
-                # float-truncated seconds (upstream behaviour, <= 21 us at 48k).
-                # Slice the decoded audio down to the exported span [a0, a1).
-                audio = _audio_span(comps.audio, a0 - start, a1 - start)
+            needed = q[-1] - q[0] + 1
+            # A VFR pts quirk (or container metadata lying about the rate)
+            # can make the decoded window shorter than planned.  Extend the
+            # window progressively instead of falling back to a full decode,
+            # which would load every frame of the video into memory.
+            for attempt in range(4):
+                windowed = video.as_trimmed(start, dur, strict_duration=False)
+                comps = windowed.get_components()
+                if comps.images.shape[0] >= needed:
+                    images = comps.images[[qi - q[0] for qi in q]]
+                    # The window decode covers [start, start + dur); its audio
+                    # head can drift by one sample when ComfyUI's per-frame
+                    # skip uses float-truncated seconds (upstream behaviour,
+                    # <= 21 us at 48k).  Slice the decoded audio down to the
+                    # exported span [a0, a1).
+                    audio = _audio_span(comps.audio, a0 - start, a1 - start)
+                    break
+                dur *= 1.5
 
         if images is None:
+            # The windowed path is unavailable: the input is a tensor video
+            # (already in memory, so a full decode costs nothing extra), or
+            # both PyAV and ffprobe failed to provide metadata.  Apply the
+            # same index map to the already-loaded tensors.
             components = video.get_components()
             full = components.images
             S = Fraction(components.frame_rate)
